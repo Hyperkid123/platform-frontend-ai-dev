@@ -183,8 +183,11 @@ spec:
 
             # Copy skill to writable workspace
             # Note: git-clone task puts repo at $(workspaces.source.path)/source
-            cp -r $(workspaces.source.path)/source/.claude/skills/post-pr /workspace/post-pr-test
-            cd /workspace/post-pr-test
+            # Also copy jira_mcp.py which post_pr imports from parent directory
+            mkdir -p /workspace/post-pr-test
+            cp -r $(workspaces.source.path)/source/.claude/skills/post-pr /workspace/post-pr-test/post-pr
+            cp $(workspaces.source.path)/source/.claude/skills/jira_mcp.py /workspace/post-pr-test/
+            cd /workspace/post-pr-test/post-pr
 
             # Install dependencies with uv (including dev extras for pytest)
             echo "Installing uv..."
