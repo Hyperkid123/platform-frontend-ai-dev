@@ -76,6 +76,7 @@ services:
         GOVERSIONS: "1.24.2 1.25.7"
     security_opt:
       - no-new-privileges
+    shm_size: 512m
     mem_limit: 8g
     cpus: 4
     pids_limit: 500
