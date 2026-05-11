@@ -220,6 +220,9 @@ objects:
           - containerPort: 8444
             name: jira-mcp
             protocol: TCP
+          - containerPort: 8446
+            name: screenshot
+            protocol: TCP
           env:
           - name: EXECUTOR_LISTEN
             value: ":9090"
@@ -318,6 +321,10 @@ objects:
       targetPort: jira-mcp
       protocol: TCP
       name: jira-mcp
+    - port: 8446
+      targetPort: screenshot
+      protocol: TCP
+      name: screenshot
 
 # --- Bot Deployment ---
 - apiVersion: apps/v1
@@ -419,6 +426,9 @@ objects:
           # Jira — proxied through proxy container (mcp-atlassian on port 8444)
           - name: JIRA_MCP_URL
             value: http://devbot-proxy:8444/mcp
+          # GH release upload — proxied through proxy container (port 8446)
+          - name: GH_RELEASE_UPLOAD_URL
+            value: http://devbot-proxy:8446/upload
           # Secrets that stay in bot container (SSO for E2E)
           - name: SSO_USERNAME
             valueFrom:
@@ -466,6 +476,8 @@ objects:
       - port: 8443
         protocol: TCP
       - port: 8444
+        protocol: TCP
+      - port: 8446
         protocol: TCP
     - to:
       - podSelector:
