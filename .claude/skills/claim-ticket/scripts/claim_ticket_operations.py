@@ -29,6 +29,13 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from jira_mcp import jira_call
 
+from .constants import (
+    DEFAULT_BOARD_ID,
+    LABEL_PLATFORM_UI,
+    PLATFORM_UI_BOARD_ID,
+    TRANSITION_IN_PROGRESS,
+)
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -70,8 +77,8 @@ class ClaimTicketOperations:
     def __init__(
         self,
         memory_url: str,
-        platform_ui_board_id: int = 9297,
-        default_board_id: int = 8070,
+        platform_ui_board_id: int = PLATFORM_UI_BOARD_ID,
+        default_board_id: int = DEFAULT_BOARD_ID,
         dry_run: bool = False,
     ):
         """
@@ -79,8 +86,8 @@ class ClaimTicketOperations:
 
         Args:
             memory_url: Memory server base URL
-            platform_ui_board_id: Board ID for platform-experience-ui tickets (default: 9297)
-            default_board_id: Default board ID (default: 8070)
+            platform_ui_board_id: Board ID for platform-experience-ui tickets
+            default_board_id: Default board ID
             dry_run: If True, log actions without executing them
         """
         self.memory_url = memory_url.rstrip("/")
@@ -202,13 +209,16 @@ class ClaimTicketOperations:
             # Find "In Progress" transition
             in_progress_transition = None
             for transition in transitions:
-                if transition.get("name") == "In Progress" or transition.get("to", {}).get("name") == "In Progress":
+                if (
+                    transition.get("name") == TRANSITION_IN_PROGRESS
+                    or transition.get("to", {}).get("name") == TRANSITION_IN_PROGRESS
+                ):
                     in_progress_transition = transition
                     break
 
             if not in_progress_transition:
                 available = [t.get("name", "unknown") for t in transitions]
-                error_msg = f"'In Progress' transition not found. Available: {available}"
+                error_msg = f"'{TRANSITION_IN_PROGRESS}' transition not found. Available: {available}"
                 logger.error(error_msg)
                 return OperationResult(
                     operation="get_transitions",
@@ -398,7 +408,7 @@ class ClaimTicketOperations:
             labels = data.get("fields", {}).get("labels", [])
 
             # Check for platform-experience-ui label
-            if "platform-experience-ui" in labels:
+            if LABEL_PLATFORM_UI in labels:
                 self.board_id = self.platform_ui_board_id
                 logger.info(f"Found 'platform-experience-ui' label, using board {self.board_id}")
             else:
