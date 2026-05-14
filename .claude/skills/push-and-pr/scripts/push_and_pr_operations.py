@@ -35,6 +35,15 @@ class RepositoryConfig:
     fork_url: Optional[str] = None
 
 
+PR_TEMPLATE_PATHS = [
+    ".github/pull_request_template.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    "pull_request_template.md",
+    "PULL_REQUEST_TEMPLATE.md",
+    ".github/PULL_REQUEST_TEMPLATE/default.md",
+]
+
+
 class PushAndPROperations:
     """Handles push and PR creation operations."""
 
@@ -213,6 +222,36 @@ class PushAndPROperations:
                 return owner_repo
 
         return url  # Fallback to original URL
+
+    @staticmethod
+    def find_pr_template(repo_dir: Optional[Path] = None) -> OperationResult:
+        """
+        Search for a PR template in the repository.
+
+        Checks common locations in priority order and returns the first match.
+
+        Args:
+            repo_dir: Directory to search in. Defaults to cwd.
+
+        Returns:
+            OperationResult with data={"path": str, "content": str} if found,
+            or data={"path": None} if no template exists.
+        """
+        base = repo_dir or Path.cwd()
+        for template_path in PR_TEMPLATE_PATHS:
+            full_path = base / template_path
+            if full_path.is_file():
+                try:
+                    content = full_path.read_text(encoding="utf-8")
+                    return OperationResult(
+                        True,
+                        f"Found PR template at {template_path}",
+                        data={"path": str(template_path), "content": content},
+                    )
+                except OSError as e:
+                    return OperationResult(False, f"Failed to read {template_path}: {e}")
+
+        return OperationResult(True, "No PR template found", data={"path": None})
 
     def sync_fork(self) -> OperationResult:
         """
@@ -504,11 +543,28 @@ def execute_push_and_pr_workflow(title: str, body: str, dry_run: bool = False) -
 def main():
     """CLI entrypoint for the push-and-pr skill."""
     parser = argparse.ArgumentParser(description="Push branch and create PR/MR")
-    parser.add_argument("title", help="PR/MR title")
-    parser.add_argument("body", help="PR/MR body/description")
+    parser.add_argument("title", nargs="?", help="PR/MR title")
+    parser.add_argument("body", nargs="?", help="PR/MR body/description")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
+    parser.add_argument(
+        "--find-template",
+        action="store_true",
+        help="Find and print the repo's PR template, then exit. Exit 0 if found, 1 if not.",
+    )
 
     args = parser.parse_args()
+
+    if args.find_template:
+        result = PushAndPROperations.find_pr_template()
+        if result.success and result.data and result.data.get("path"):
+            print(result.data["content"], end="")
+            sys.exit(0)
+        else:
+            print(result.message, file=sys.stderr)
+            sys.exit(1)
+
+    if not args.title or not args.body:
+        parser.error("title and body are required when not using --find-template")
 
     exit_code = execute_push_and_pr_workflow(title=args.title, body=args.body, dry_run=args.dry_run)
     sys.exit(exit_code)

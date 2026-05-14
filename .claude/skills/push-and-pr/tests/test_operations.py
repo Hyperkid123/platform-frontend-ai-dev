@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from scripts.push_and_pr_operations import (
+    PR_TEMPLATE_PATHS,
     PushAndPROperations,
     RepositoryConfig,
 )
@@ -654,3 +655,90 @@ class TestDryRun:
 
         assert result.success is True
         mock_run.assert_called_once()
+
+
+class TestFindPRTemplate:
+    """Test find_pr_template static method."""
+
+    def test_finds_github_template(self, temp_dir):
+        """Test finding .github/pull_request_template.md (most common location)."""
+        github_dir = temp_dir / ".github"
+        github_dir.mkdir()
+        template = github_dir / "pull_request_template.md"
+        template.write_text("## Description\n<!-- what and why -->\n")
+
+        result = PushAndPROperations.find_pr_template(repo_dir=temp_dir)
+
+        assert result.success is True
+        assert result.data["path"] == ".github/pull_request_template.md"
+        assert "## Description" in result.data["content"]
+
+    def test_finds_root_uppercase_template(self, temp_dir):
+        """Test finding PULL_REQUEST_TEMPLATE.md in repo root (no .github/ dir)."""
+        template = temp_dir / "PULL_REQUEST_TEMPLATE.md"
+        template.write_text("# PR Template\n")
+
+        result = PushAndPROperations.find_pr_template(repo_dir=temp_dir)
+
+        assert result.success is True
+        assert result.data["path"] in ("PULL_REQUEST_TEMPLATE.md", "pull_request_template.md")
+
+    def test_finds_root_template(self, temp_dir):
+        """Test finding pull_request_template.md in repo root."""
+        template = temp_dir / "pull_request_template.md"
+        template.write_text("Root template\n")
+
+        result = PushAndPROperations.find_pr_template(repo_dir=temp_dir)
+
+        assert result.success is True
+        assert result.data["path"] in ("pull_request_template.md", "PULL_REQUEST_TEMPLATE.md")
+
+    def test_finds_default_template_in_subdirectory(self, temp_dir):
+        """Test finding .github/PULL_REQUEST_TEMPLATE/default.md."""
+        template_dir = temp_dir / ".github" / "PULL_REQUEST_TEMPLATE"
+        template_dir.mkdir(parents=True)
+        template = template_dir / "default.md"
+        template.write_text("Default template\n")
+
+        result = PushAndPROperations.find_pr_template(repo_dir=temp_dir)
+
+        assert result.success is True
+        assert result.data["path"] == ".github/PULL_REQUEST_TEMPLATE/default.md"
+
+    def test_no_template_found(self, temp_dir):
+        """Test graceful handling when no template exists."""
+        result = PushAndPROperations.find_pr_template(repo_dir=temp_dir)
+
+        assert result.success is True
+        assert result.data["path"] is None
+        assert "No PR template found" in result.message
+
+    def test_priority_order_github_over_root(self, temp_dir):
+        """Test that .github/ template is found before root template."""
+        github_dir = temp_dir / ".github"
+        github_dir.mkdir()
+        (github_dir / "pull_request_template.md").write_text("github dir\n")
+        (temp_dir / "PULL_REQUEST_TEMPLATE.md").write_text("root dir\n")
+
+        result = PushAndPROperations.find_pr_template(repo_dir=temp_dir)
+
+        assert result.success is True
+        assert ".github/" in result.data["path"]
+        assert result.data["content"] == "github dir\n"
+
+    def test_uses_cwd_when_no_repo_dir(self):
+        """Test that find_pr_template defaults to cwd."""
+        with patch("scripts.push_and_pr_operations.Path.cwd") as mock_cwd:
+            mock_cwd.return_value = Path("/nonexistent/path")
+            result = PushAndPROperations.find_pr_template()
+
+        assert result.success is True
+        assert result.data["path"] is None
+
+    def test_template_paths_constant(self):
+        """Test that PR_TEMPLATE_PATHS contains expected entries."""
+        assert ".github/pull_request_template.md" in PR_TEMPLATE_PATHS
+        assert ".github/PULL_REQUEST_TEMPLATE.md" in PR_TEMPLATE_PATHS
+        assert "pull_request_template.md" in PR_TEMPLATE_PATHS
+        assert "PULL_REQUEST_TEMPLATE.md" in PR_TEMPLATE_PATHS
+        assert ".github/PULL_REQUEST_TEMPLATE/default.md" in PR_TEMPLATE_PATHS

@@ -364,7 +364,8 @@ Before starting work, `jira_get_issue` → check issue links:
 
     **CRITICAL**: glab URL-encodes newlines if description is passed inline. ALWAYS use heredoc `$(cat <<'EOF' ... EOF)` for multiline descriptions.
 
-    Parse PR/MR number + URL from JSON response. Title ≤50 chars. Body = ticket key + changes summary.
+    Parse PR/MR number + URL from JSON response. Title ≤50 chars.
+    **PR body**: Use the `/push-and-pr` skill's `--find-template` to discover the repo's PR template. If found, fill in each section (see SKILL.md for details). If not found, fall back to freeform: ticket key + changes summary.
     Readonly repos: include config changes in Jira comment.
 
 11. **Track PRs**: `task_update` status `pr_open`, `pr_number`, `pr_url`, `summary`, `last_addressed`. Multi-repo: `metadata.prs`:

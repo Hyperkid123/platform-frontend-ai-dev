@@ -123,6 +123,32 @@ ruff check --fix .
 uv run python scripts/push_and_pr_operations.py "Test PR" "Test description" --dry-run
 ```
 
+## PR Template Support
+
+The skill can discover and use a repo's PR template to structure the PR body.
+
+### Finding Templates
+
+```bash
+python3 scripts/push_and_pr_operations.py --find-template
+```
+
+Searches these locations in order (first match wins):
+1. `.github/pull_request_template.md`
+2. `.github/PULL_REQUEST_TEMPLATE.md`
+3. `pull_request_template.md`
+4. `PULL_REQUEST_TEMPLATE.md`
+5. `.github/PULL_REQUEST_TEMPLATE/default.md`
+
+Exit 0 and prints template content if found. Exit 1 if no template exists.
+
+### Workflow
+
+1. Run `--find-template` to discover the repo's PR template
+2. If found, fill in each section (description, checklist, AI disclosure, etc.)
+3. Pass the filled template as the `body` argument to the main command
+4. If not found, use freeform format (ticket key + changes summary)
+
 ## Error Handling
 
 All operations follow fail-fast behavior:

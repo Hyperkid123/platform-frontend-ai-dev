@@ -13,7 +13,30 @@ allowed-tools:
   - Read
 ---
 
-Run the push-and-pr script after committing changes:
+## Template-aware PR body
+
+Before creating the PR, check if the repo has a PR template and use it to structure the body.
+
+**Step 1 — Discover template:**
+
+```bash
+python3 .claude/skills/push-and-pr/scripts/push_and_pr_operations.py --find-template 2>&1
+```
+
+- Exit 0 → template found, raw content printed to stdout.
+- Exit 1 → no template found, use freeform format (ticket key + changes summary).
+
+**Step 2 — Fill template sections:**
+
+If a template was found, fill in each section before passing as `<PR_BODY>`:
+- Remove HTML comments (`<!-- ... -->`) and replace with actual content.
+- **Description/Summary** → what changed, why, Jira ticket link `[KEY](url)`.
+- **Checklist** → mark completed items `[x]`, leave others `[ ]`.
+- **AI disclosure** → "Assisted by: Claude Code".
+- **Screenshots** → reference uploaded screenshot URLs (if applicable).
+- **Other sections** → fill based on heading context; write "N/A" if not applicable.
+
+**Step 3 — Push and create PR:**
 
 ```bash
 python3 .claude/skills/push-and-pr/scripts/push_and_pr_operations.py "<PR_TITLE>" "<PR_BODY>" 2>&1
