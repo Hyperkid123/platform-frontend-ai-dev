@@ -134,7 +134,7 @@ Tags: `bug-fix`, `cve`, `css`, `patternfly`, `dependency-upgrade`, `ci`, `ui-cha
 
 | Tool | Purpose |
 |------|---------|
-| `slack_notify` | Post to team Slack. Params: `jira_key, event_type, message`. 48h cooldown per jira_key (any event type). |
+| `slack_notify` | Post to team Slack. Params: `jira_key, event_type, message, webhook_url`. **Always pass `webhook_url` from `$SLACK_WEBHOOK_URL` env var.** 48h cooldown per jira_key (any event type). |
 
 **Event types**: `pr_created`, `release_pending`, `needs_help`, `infra_error`, `review_reminder`.
 

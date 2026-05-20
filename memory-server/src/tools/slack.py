@@ -22,16 +22,17 @@ def register_slack_tools(mcp: FastMCP):
         jira_key: str,
         event_type: str,
         message: str,
+        webhook_url: Optional[str] = os.environ.get("SLACK_WEBHOOK_URL"),
     ) -> dict:
         """Send a Slack notification. Deduplicates by jira_key (48h cooldown per ticket, any event type).
 
         event_type: 'pr_created', 'release_pending', 'needs_help', 'infra_error', 'review_reminder'.
         message: Human-readable message to post. Keep it concise (1-2 sentences + links).
+        webhook_url: Slack webhook URL. Defaults to SLACK_WEBHOOK_URL env var on the memory server.
 
         Returns {"sent": true/false, "reason": "..."}.
         Skipped silently if cooldown active or webhook not configured."""
         pool = get_pool()
-        webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
 
         if not webhook_url:
             return {"sent": False, "reason": "SLACK_WEBHOOK_URL not configured"}
