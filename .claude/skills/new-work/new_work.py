@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Fetch new Jira work candidates. Runs after triage when no outstanding work.
 
-Queries current sprint (and optionally backlog) for unassigned tickets
-matching BOT_LABEL, ordered by priority. Checks repo: labels against
-project-repos.json. Outputs full context for each candidate.
+Label-driven queries (no board/project hardcoding). Priority order:
+  1. In active sprint + unassigned
+  2. In active sprint + assigned to bot
+  3. Backlog (no sprint, if BOT_INCLUDE_BACKLOG)
+
+Checks repo: labels against project-repos.json.
 """
 
 import json
 import os
 import sys
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -19,11 +20,8 @@ from paths import SLEEP_FILE
 
 PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
 BOT_LABEL = os.environ.get("BOT_LABEL", "")
-BOT_BOARD_ID = os.environ.get("BOT_BOARD_ID", "")
-BOT_BOARD_NAME = os.environ.get("BOT_BOARD_NAME", "")
 BOT_INCLUDE_BACKLOG = os.environ.get("BOT_INCLUDE_BACKLOG", "").lower() in ("1", "true", "yes")
 BOT_JIRA_EMAIL = os.environ.get("BOT_JIRA_EMAIL", "")
-BOT_SPRINT_PREFIX = os.environ.get("BOT_SPRINT_PREFIX", "")
 NOT_STARTED_STATUSES = ("New", "Backlog", "Refinement", "To Do")
 
 
@@ -38,56 +36,6 @@ def jira_search(jql, limit=10):
         return []
     issues = data if isinstance(data, list) else data.get("issues", [])
     return issues
-
-
-def resolve_board_id():
-    if BOT_BOARD_ID:
-        return BOT_BOARD_ID
-    if not BOT_BOARD_NAME:
-        print("WARN: neither BOT_BOARD_ID nor BOT_BOARD_NAME set, skipping sprint query", file=sys.stderr)
-        return None
-    data = jira_call("jira_get_agile_boards", {
-        "board_name": BOT_BOARD_NAME,
-        "limit": 1,
-    })
-    if not data:
-        print(f"ERR: no board found matching name '{BOT_BOARD_NAME}'", file=sys.stderr)
-        return None
-    boards = data if isinstance(data, list) else data.get("values", [])
-    if not boards:
-        print(f"ERR: no board found matching name '{BOT_BOARD_NAME}'", file=sys.stderr)
-        return None
-    board = boards[0]
-    print(f"Resolved board: {board.get('name', '?')} (id={board['id']})", file=sys.stderr)
-    return str(board["id"])
-
-
-def get_active_sprint():
-    board_id = resolve_board_id()
-    if not board_id:
-        return None
-    data = jira_call("jira_get_sprints_from_board", {
-        "board_id": board_id,
-        "state": "active",
-        "limit": 10,
-    })
-    if not data:
-        return None
-    sprints = data if isinstance(data, list) else data.get("values", [])
-    if not sprints:
-        return None
-    if BOT_SPRINT_PREFIX:
-        matched = [s for s in sprints if s.get("name", "").startswith(BOT_SPRINT_PREFIX)]
-        if matched:
-            sprint = matched[0]
-            print(f"Active sprint (prefix={BOT_SPRINT_PREFIX}): {sprint.get('name', '?')} (id={sprint['id']})", file=sys.stderr)
-            return sprint
-        names = [s.get("name", "?") for s in sprints]
-        print(f"WARN: no sprint matching prefix '{BOT_SPRINT_PREFIX}', available: {names}", file=sys.stderr)
-        return None
-    sprint = sprints[0]
-    print(f"Active sprint: {sprint.get('name', '?')} (id={sprint['id']})", file=sys.stderr)
-    return sprint
 
 
 def load_project_repos():
@@ -126,34 +74,48 @@ def get_candidates():
     repo_lookup = build_repo_lookup(repos_dict)
     status_list = ", ".join(f'"{s}"' for s in NOT_STARTED_STATUSES)
     candidates = []
+    seen_keys = set()
 
-    sprint = get_active_sprint()
-    if sprint:
-        jql = (
-            f"project = RHCLOUD AND labels = {BOT_LABEL} "
-            f"AND status IN ({status_list}) "
-            f"AND sprint = {sprint['id']} "
-            f"ORDER BY priority DESC, created ASC"
+    def collect(jql, tag):
+        added = 0
+        for c in jira_search(jql, limit=10):
+            if c["key"] not in seen_keys:
+                seen_keys.add(c["key"])
+                candidates.append(c)
+                added += 1
+                if len(candidates) >= 10:
+                    break
+        print(f"  {tag}: +{added} (total {len(candidates)})", file=sys.stderr)
+
+    # Tier 1: in active sprint, unassigned
+    collect(
+        f"labels = {BOT_LABEL} AND sprint in openSprints() "
+        f"AND assignee is EMPTY AND status IN ({status_list}) "
+        f"ORDER BY priority DESC, created ASC",
+        "sprint/unassigned",
+    )
+
+    # Tier 2: in active sprint, assigned to bot (not yet started)
+    if len(candidates) < 10 and BOT_JIRA_EMAIL:
+        collect(
+            f"labels = {BOT_LABEL} AND sprint in openSprints() "
+            f'AND assignee = "{BOT_JIRA_EMAIL}" AND status IN ({status_list}) '
+            f"ORDER BY priority DESC, created ASC",
+            "sprint/bot-assigned",
         )
-        candidates.extend(jira_search(jql, limit=10))
 
+    # Tier 3: backlog (no sprint)
     if len(candidates) < 10 and BOT_INCLUDE_BACKLOG:
-        existing_keys = {c["key"] for c in candidates}
         if BOT_JIRA_EMAIL:
             assignee_filter = f'AND (assignee is EMPTY OR assignee = "{BOT_JIRA_EMAIL}") '
         else:
             assignee_filter = "AND assignee is EMPTY "
-        jql = (
-            f"project = RHCLOUD AND labels = {BOT_LABEL} "
-            f"{assignee_filter}AND status IN ({status_list}) "
-            f"AND sprint is EMPTY "
-            f"ORDER BY priority DESC, created ASC"
+        collect(
+            f"labels = {BOT_LABEL} {assignee_filter}"
+            f"AND status IN ({status_list}) AND sprint is EMPTY "
+            f"ORDER BY priority DESC, created ASC",
+            "backlog",
         )
-        for c in jira_search(jql, limit=10):
-            if c["key"] not in existing_keys:
-                candidates.append(c)
-                if len(candidates) >= 10:
-                    break
 
     results = []
     for issue in candidates:
