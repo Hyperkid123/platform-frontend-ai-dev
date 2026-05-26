@@ -7,7 +7,6 @@ import pytest
 
 # Test constants
 TEST_BOT_USERNAME = "test-bot"
-TEST_CONFIG_REPO = "https://github.com/test-org/test-config.git"
 TEST_INSTANCE_ID = "test-instance"
 
 # Test data - repos configuration for fixtures
@@ -32,7 +31,6 @@ TEST_REPOS_CONFIG = {
 def set_env_vars(monkeypatch):
     """Set required env vars for all tests."""
     monkeypatch.setenv("BOT_GITHUB_USERNAME", TEST_BOT_USERNAME)
-    monkeypatch.setenv("BOT_CONFIG_REPO", TEST_CONFIG_REPO)
     monkeypatch.setenv("BOT_INSTANCE_ID", TEST_INSTANCE_ID)
     monkeypatch.setenv("BOT_CONFIG_PATH", "test-config")
 
@@ -61,7 +59,10 @@ def temp_config_dir(tmp_path):
     subprocess.run(["git", "add", "."], cwd=config_dir, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "Initial"], cwd=config_dir, capture_output=True, check=True)
     subprocess.run(
-        ["git", "remote", "add", "origin", TEST_CONFIG_REPO], cwd=config_dir, capture_output=True, check=True
+        ["git", "remote", "add", "origin", "https://github.com/test-org/test-config.git"],
+        cwd=config_dir,
+        capture_output=True,
+        check=True,
     )
 
     return config_dir

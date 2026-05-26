@@ -35,15 +35,17 @@ GitLab repos are skipped with a logged notice (manual forking required).
 
 ## Configuration
 
-Set these environment variables:
+Required environment variables:
 
 ```bash
-# Config repo where project-repos.json lives (required)
-export BOT_CONFIG_REPO=https://github.com/your-org/your-config-repo
-
 # Bot's GitHub account (required) — username for fork destination
+# Must be a valid GitHub username (alphanumeric, hyphens, max 39 chars)
 export BOT_GITHUB_USERNAME=platex-rehor-bot
+```
 
+Optional environment variables:
+
+```bash
 # Instance ID (optional) — branch will be bot/auto-fork-{instance_id}
 export BOT_INSTANCE_ID=rehor
 

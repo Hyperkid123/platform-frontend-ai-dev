@@ -16,7 +16,7 @@ Automatically fork repos and update configuration. Detects repos in `project-rep
 
 ```bash
 # Step 1: Fork repos and commit changes
-uv run python auto_fork.py
+python3 auto_fork.py
 
 # Step 2: Push and create PR (use push-and-pr skill)
 # The script creates branch bot/auto-fork (or bot/auto-fork-{instance_id})
@@ -25,7 +25,7 @@ uv run python auto_fork.py
 ### Dry Run
 
 ```bash
-uv run python auto_fork.py --dry-run
+python3 auto_fork.py --dry-run
 ```
 
 ## Configuration
@@ -34,17 +34,21 @@ Required environment variables:
 
 ```bash
 # Bot's GitHub username (required)
+# Must be a valid GitHub username (alphanumeric, hyphens, max 39 chars)
 export BOT_GITHUB_USERNAME=platex-rehor-bot
+```
 
-# Config repo URL (optional, for PR creation context)
-export BOT_CONFIG_REPO=https://github.com/your-org/your-config-repo
+Optional environment variables:
 
+```bash
 # Instance ID (optional, affects branch name)
 export BOT_INSTANCE_ID=rehor
 
 # Config path (optional, defaults to "rehor-config")
 export BOT_CONFIG_PATH=rehor-config
 ```
+
+The script validates that `BOT_GITHUB_USERNAME` follows GitHub username rules and will raise a `ValueError` early if validation fails.
 
 ## Development
 
