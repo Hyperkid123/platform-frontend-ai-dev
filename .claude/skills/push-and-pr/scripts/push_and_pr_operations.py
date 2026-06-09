@@ -47,10 +47,11 @@ PR_TEMPLATE_PATHS = [
 class PushAndPROperations:
     """Handles push and PR creation operations."""
 
-    def __init__(self, title: str, body: str, dry_run: bool = False):
+    def __init__(self, title: str, body: str, dry_run: bool = False, cwd: Optional[Path] = None):
         self.title = title
         self.body = body
         self.dry_run = dry_run
+        self.cwd = cwd
         self.repo_config: Optional[RepositoryConfig] = None
         self.current_branch: Optional[str] = None
         self.pr_url: Optional[str] = None
@@ -64,7 +65,7 @@ class PushAndPROperations:
             print(f"[DRY RUN] Would execute: {' '.join(cmd)}")
             return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
 
-        result = subprocess.run(cmd, capture_output=capture_output, text=True, check=check)
+        result = subprocess.run(cmd, capture_output=capture_output, text=True, check=check, cwd=self.cwd)
         return result
 
     def detect_repository(self) -> OperationResult:
@@ -485,7 +486,7 @@ class PushAndPROperations:
         )
 
 
-def execute_push_and_pr_workflow(title: str, body: str, dry_run: bool = False) -> int:
+def execute_push_and_pr_workflow(title: str, body: str, dry_run: bool = False, cwd: Optional[Path] = None) -> int:
     """
     Execute the complete push and PR workflow.
 
@@ -493,11 +494,12 @@ def execute_push_and_pr_workflow(title: str, body: str, dry_run: bool = False) -
         title: PR title
         body: PR body/description
         dry_run: If True, print commands without executing
+        cwd: Working directory to run commands in
 
     Returns:
         0 for success, 1 for failure
     """
-    ops = PushAndPROperations(title=title, body=body, dry_run=dry_run)
+    ops = PushAndPROperations(title=title, body=body, dry_run=dry_run, cwd=cwd)
 
     # Operation 1: Detect repository
     print("[1/4] Detecting repository configuration...")
