@@ -85,9 +85,7 @@ async def _validate(conn: asyncpg.Connection) -> list[str]:
 async def run_migration(conn: asyncpg.Connection) -> dict:
     errors = await _validate(conn)
     if errors:
-        raise RuntimeError(
-            "Pre-drop validation failed:\n  " + "\n  ".join(errors)
-        )
+        raise RuntimeError("Pre-drop validation failed:\n  " + "\n  ".join(errors))
 
     stats = {}
 

@@ -96,10 +96,7 @@ async def api_tasks(request: Request) -> JSONResponse:
 
     return JSONResponse(
         {
-            "items": [
-                _task(r, notifications.get(r["external_key"]))
-                for r in rows
-            ],
+            "items": [_task(r, notifications.get(r["external_key"])) for r in rows],
             "total": total,
             "limit": limit,
             "offset": offset,
@@ -120,9 +117,7 @@ async def api_task_delete(request: Request) -> JSONResponse:
     if not row:
         return JSONResponse({"error": f"Task {key} not found"}, status_code=404)
     await bus.publish(Event("task_archived", {"external_key": key}))
-    return JSONResponse(
-        {"archived": True, "external_key": key, "task": _task(row)}
-    )
+    return JSONResponse({"archived": True, "external_key": key, "task": _task(row)})
 
 
 async def api_task_unarchive(request: Request) -> JSONResponse:
@@ -145,9 +140,7 @@ async def api_task_unarchive(request: Request) -> JSONResponse:
             {"external_key": key, "status": "in_progress"},
         )
     )
-    return JSONResponse(
-        {"unarchived": True, "external_key": key, "task": _task(row)}
-    )
+    return JSONResponse({"unarchived": True, "external_key": key, "task": _task(row)})
 
 
 async def api_memories(request: Request) -> JSONResponse:

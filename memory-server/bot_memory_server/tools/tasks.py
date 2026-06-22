@@ -138,7 +138,11 @@ def register_task_tools(mcp: FastMCP):
             metadata = json.loads(metadata)
         meta_dict = metadata or {}
         artifacts = build_artifacts(meta_dict)
-        source_url = f"{JIRA_BASE_URL}/{external_key}" if JIRA_BASE_URL and source_type == "jira" else None
+        source_url = (
+            f"{JIRA_BASE_URL}/{external_key}"
+            if JIRA_BASE_URL and source_type == "jira"
+            else None
+        )
         row = await pool.fetchrow(
             """
             INSERT INTO tasks (external_key, source_type, source_url, artifacts,
@@ -276,9 +280,7 @@ def register_task_tools(mcp: FastMCP):
         if not row:
             raise ValueError(f"Task {external_key} not found")
         result = _row_to_task(row)
-        await bus.publish(
-            Event("task_archived", {"external_key": external_key})
-        )
+        await bus.publish(Event("task_archived", {"external_key": external_key}))
         return result
 
     @mcp.tool()
