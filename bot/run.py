@@ -12,6 +12,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from dotenv import load_dotenv
 from filelock import FileLock, Timeout
@@ -164,13 +166,32 @@ def sync_config_repo() -> Path | None:
 
 SLEEP_SIGNAL_FILE = DATA_DIR / "cycle-sleep.json"
 LOW_DISK_THRESHOLD_MB = 512
+WAKE_POLL_INTERVAL = 5
+
+DASHBOARD_BASE_URL = os.environ.get(
+    "BOT_DASHBOARD_URL", "http://localhost:8080/api/bot-status"
+).rsplit("/bot-status", 1)[0]
 
 
-def _read_sleep_signal(config: Config) -> int:
+def _check_wake_signal(instance_id: str) -> bool:
+    """Poll the memory server for a wake trigger. Returns True if wake requested."""
+    try:
+        url = f"{DASHBOARD_BASE_URL}/instances/{instance_id}/wake"
+        with urlopen(url, timeout=2) as resp:
+            data = json.loads(resp.read())
+            return data.get("wake", False)
+    except (URLError, OSError, json.JSONDecodeError, Exception):
+        return False
+
+
+def _read_sleep_signal(config: Config, instance_id: str | None = None) -> int:
     """Read sleep duration from skill-written signal file.
 
     Skills write data/cycle-sleep.json with {"recommended_sleep": N, "reason": "..."}.
     No file = standard interval (work was done). File is always deleted after reading.
+
+    Instead of blocking for the full duration, sleeps in short intervals and polls
+    the memory server for a wake trigger so the dashboard can interrupt the sleep.
     """
     logger = logging.getLogger(__name__)
     sleep_seconds = config.interval
@@ -188,8 +209,23 @@ def _read_sleep_signal(config: Config) -> int:
     else:
         logger.info("No sleep signal, using default %ds", config.interval)
 
+    sleep_seconds = max(sleep_seconds, WAKE_POLL_INTERVAL)
     logger.info("Sleeping for %ds...", sleep_seconds)
-    time.sleep(sleep_seconds)
+
+    if instance_id:
+        elapsed = 0
+        while elapsed < sleep_seconds:
+            time.sleep(WAKE_POLL_INTERVAL)
+            elapsed += WAKE_POLL_INTERVAL
+            if _check_wake_signal(instance_id):
+                logger.info(
+                    "Wake signal received after %ds — starting next cycle early",
+                    elapsed,
+                )
+                return elapsed
+    else:
+        time.sleep(sleep_seconds)
+
     return sleep_seconds
 
 
@@ -353,7 +389,7 @@ def main() -> None:
             else:
                 logger.warning("Cycle produced no result")
 
-            sleep_seconds = _read_sleep_signal(config)
+            sleep_seconds = _read_sleep_signal(config, instance_id)
 
             cleanup_between_cycles(SCRIPT_DIR)
     finally:

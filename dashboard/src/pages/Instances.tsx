@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { BotInstance } from '../types';
-import { fetchInstances } from '../api';
+import { fetchInstances, wakeInstance } from '../api';
 import { useWS } from '../hooks/useWebSocket';
 import { timeAgo, sourceUrl, displayKey } from '../utils';
 
 export default function Instances() {
   const [instances, setInstances] = useState<BotInstance[]>([]);
+  const [wakingIds, setWakingIds] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
   const { onEvent } = useWS();
 
@@ -23,11 +24,33 @@ export default function Instances() {
     load();
   }, [load]);
 
+  const handleWake = useCallback(async (e: React.MouseEvent, instanceId: string) => {
+    e.stopPropagation();
+    setWakingIds((prev) => new Set(prev).add(instanceId));
+    try {
+      await wakeInstance(instanceId);
+    } catch {
+      setWakingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(instanceId);
+        return next;
+      });
+    }
+  }, []);
+
   useEffect(() => {
     return onEvent((event) => {
       if (event.type === 'bot_status') {
+        const id = event.data.instance_id;
+        if (id && event.data.state === 'working') {
+          setWakingIds((prev) => {
+            if (!prev.has(id)) return prev;
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+        }
         setInstances((prev) => {
-          const id = event.data.instance_id;
           if (!id) return prev;
           const idx = prev.findIndex((i) => i.instance_id === id);
           if (idx >= 0) {
@@ -91,8 +114,26 @@ export default function Instances() {
               <span className="instance-tasks">
                 {inst.active_tasks}/{inst.max_tasks} tasks
               </span>
-              <span className="instance-updated" title={inst.updated_at}>
-                {timeAgo(inst.updated_at)}
+              <span className="instance-footer-right">
+                {inst.state === 'idle' && (
+                  <button
+                    className={`wake-btn${wakingIds.has(inst.instance_id) ? ' waking' : ''}`}
+                    disabled={wakingIds.has(inst.instance_id)}
+                    onClick={(e) => handleWake(e, inst.instance_id)}
+                    title="Wake bot — start next cycle immediately"
+                  >
+                    {wakingIds.has(inst.instance_id) ? (
+                      'Waking…'
+                    ) : (
+                      <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor">
+                        <path d="M0 0 L12 7 L0 14 Z" />
+                      </svg>
+                    )}
+                  </button>
+                )}
+                <span className="instance-updated" title={inst.updated_at}>
+                  {timeAgo(inst.updated_at)}
+                </span>
               </span>
             </div>
           </div>
