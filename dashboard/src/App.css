@@ -406,6 +406,36 @@ header {
   color: var(--text-dim);
 }
 
+.instance-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wake-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--green);
+  border: 1px solid var(--green);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+  line-height: 1;
+}
+.wake-btn:hover {
+  background: rgba(63, 185, 80, 0.15);
+}
+.wake-btn.waking {
+  opacity: 0.6;
+  cursor: default;
+  color: var(--text-dim);
+  border-color: var(--text-dim);
+}
+
 /* Tab nav */
 .tab-nav {
   display: flex;
