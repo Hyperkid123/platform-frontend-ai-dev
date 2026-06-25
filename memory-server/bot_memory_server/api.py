@@ -1090,6 +1090,7 @@ def _task(row, slack_notif=None) -> dict:
     result = {
         "id": row["id"],
         "external_key": row["external_key"],
+        "jira_key": row["external_key"],
         "source_type": row["source_type"],
         "source_url": row.get("source_url"),
         "artifacts": artifacts,

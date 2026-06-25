@@ -5,7 +5,7 @@ Uses the MCP Python SDK for proper session handling over streamable HTTP.
 Usage:
     from memory_mcp import memory_call
 
-    data = memory_call("slack_notify", {"jira_key": "X", ...})
+    data = memory_call("slack_notify", {"external_key": "X", ...})
 """
 
 import asyncio

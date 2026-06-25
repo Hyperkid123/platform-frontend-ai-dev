@@ -319,7 +319,7 @@ def enrich(task):
                 all_issues.extend(issues)
                 pr_comments.extend(gl_mr_notes(up, pr_num))
 
-    jira = jira_issue(task.get("jira_key", ""))
+    jira = jira_issue(task.get("external_key", ""))
     jira_comments = []
     if jira:
         jira_comments = (jira.get("fields", {}).get("comment", {}).get("comments") or [])[-10:]
@@ -336,7 +336,7 @@ def enrich(task):
 
 def fmt_task(e):
     t = e["task"]
-    key, status, repo = t.get("jira_key", "?"), t.get("status", "?"), t.get("repo", "?")
+    key, status, repo = t.get("external_key", "?"), t.get("status", "?"), t.get("repo", "?")
     meta = t.get("metadata") or {}
     lines = [f"{key} [{status}] {repo}"]
     if t.get("title"):
@@ -444,9 +444,9 @@ def main():
     if not active:
         print("NO ACTIVE TASKS -> Priority 2 (new Jira work)")
         if done:
-            print(f"done pending archival: {','.join(t.get('jira_key', '?') for t in done)}")
+            print(f"done pending archival: {','.join(t.get('external_key', '?') for t in done)}")
         if paused:
-            print(f"paused: {','.join(t.get('jira_key', '?') for t in paused)}")
+            print(f"paused: {','.join(t.get('external_key', '?') for t in paused)}")
         return
 
     enriched = [enrich(t) for t in active]
@@ -530,13 +530,13 @@ def main():
         print(f"== CLEAN ({len(clean)}) — no action ==")
         for e in clean:
             t = e["task"]
-            print(f"  {t.get('jira_key', '?')} [{t.get('status', '?')}] {t.get('repo', '?')}")
+            print(f"  {t.get('external_key', '?')} [{t.get('status', '?')}] {t.get('repo', '?')}")
         print()
 
     if paused:
-        print(f"PAUSED: {' | '.join(t.get('jira_key', '?') + ':' + str(t.get('paused_reason', '')) for t in paused)}")
+        print(f"PAUSED: {' | '.join(t.get('external_key', '?') + ':' + str(t.get('paused_reason', '')) for t in paused)}")
     if done:
-        print(f"DONE (archive?): {','.join(t.get('jira_key', '?') for t in done)}")
+        print(f"DONE (archive?): {','.join(t.get('external_key', '?') for t in done)}")
 
     total = len(merged) + len(closed) + len(ci_fail) + len(conflict) + len(feedback) + len(interrupted)
     if total == 0:
