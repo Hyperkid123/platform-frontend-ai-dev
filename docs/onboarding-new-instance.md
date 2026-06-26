@@ -294,7 +294,7 @@ Follow the Konflux onboarding rules to register your repo. The key requirements:
 
 1. **Onboard your repo to Konflux** — follow the standard Konflux onboarding process for your tenant namespace
 2. **Configure a ReleasePlan** — your component needs a ReleasePlan and corresponding ReleasePlanAdmission so that push builds produce a release to your Quay prod repo
-3. **Make the image public** — the final Quay image must be public so OpenShift can pull it without an image pull secret. Go to your Quay repo → Settings → Repository Visibility → Make Public
+3. **Make the image public** — configure the ReleasePlanAdmission to set the image repository as public. This is handled within the release config, not manually in Quay
 
 Pipeline config:
 
