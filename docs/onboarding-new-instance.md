@@ -419,7 +419,7 @@ The shared `devbot-secrets` secret (GitHub/GitLab/GPG/GCP credentials) is still 
 
 ### Reference: Existing app-interface config
 
-The platform-frontend-ai-dev app-interface directory (`data/services/insights/platform-frontend-ai-dev/`) contains:
+Use the framework instance ([`hcc-ui-agent-dev`](https://github.com/RedHatInsights/hcc-ui-agent-dev)) as your reference — it always has the latest configuration. Its app-interface directory (`data/services/insights/platform-frontend-ai-dev/`) contains:
 
 | File | Purpose |
 |------|---------|
