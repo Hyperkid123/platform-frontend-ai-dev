@@ -151,6 +151,7 @@ ENV BUILDAH_ISOLATION=chroot
 # Copy bot config files
 COPY dev-bot/config.json dev-bot/CLAUDE.md dev-bot/.mcp.json dev-bot/entrypoint.sh ./
 COPY dev-bot/.claude/ .claude/
+COPY dev-bot/presets/ presets/
 
 # Run post-pr skill tests during build (validates skill before image is finalized)
 RUN cd .claude/skills/post-pr \
@@ -179,6 +180,19 @@ RUN chmod +x /tmp/instance-setup.sh \
 
 # Copy instance-specific files (optional — create empty instance/ dir if unused)
 COPY instance/ /home/botuser/app/instance/
+
+# Validate instance config at build time
+RUN python3 -c ' \
+import yaml, glob, sys; \
+files = glob.glob("/home/botuser/app/instance/*/agent/instance.yaml"); \
+exit(0) if not files and not print("No instance.yaml found — will use env var defaults at runtime") else None; \
+[(lambda cfg: [ \
+    print("Instance config: " + f), \
+    print("  workflow: " + cfg.get("workflow", "jira-sprint")), \
+    print("  source: " + cfg.get("source", "jira")), \
+    print("  envs: " + str(cfg.get("envs", "(all default)"))), \
+    print("  claude_md.strategy: " + (cfg.get("claude_md") or {}).get("strategy", "ignore")), \
+])(yaml.safe_load(open(f)) or {}) for f in files]'
 
 # Fix ownership — must run last
 RUN chown -R botuser:0 /home/botuser \
