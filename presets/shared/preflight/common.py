@@ -98,6 +98,9 @@ def _parse_repo_path(url):
 
 def upstream_repo(repo_name):
     """Resolve a repo name to (upstream_path, host) from project-repos.json."""
+    if "/" in repo_name:
+        host = "gitlab" if "gitlab" in repo_name.lower() else "github"
+        return repo_name, host
     repos = load_project_repos()
     entry = repos.get(repo_name, {})
     up = entry.get("upstream", "")
