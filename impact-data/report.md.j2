@@ -38,6 +38,14 @@
 | Dashboard costs API | Recorded cycle cost data | {{ cost_count }} records |
 | App-interface checkout | Deployed instance/configuration evidence | {{ inventory.get('files', [])|length }} files |
 
+{% if warnings %}
+> [!WARNING]
+> Collection warnings:
+{% for warning in warnings %}
+> - {{ warning }}
+{% endfor %}
+{% endif %}
+
 ## Historical Instance Workload
 
 Current state is intentionally omitted. It does not answer how much work each instance performed. This table counts persisted historical task ownership.

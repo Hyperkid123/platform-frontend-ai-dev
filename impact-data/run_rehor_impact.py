@@ -2,6 +2,7 @@
 """Run complete Rehor impact collection and report generation."""
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -11,11 +12,13 @@ import generate_rehor_report
 
 
 def main():
+    collect_rehor_impact.load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    collect_rehor_impact.load_dotenv(Path(__file__).resolve().parent.parent / ".env.report")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", default="impact-data/runs")
     parser.add_argument("--app-interface", default=str(Path.home() / "insights/app-interface"))
-    parser.add_argument("--memory-api")
-    parser.add_argument("--jira-filter", default="107017")
+    parser.add_argument("--memory-api", default=os.environ.get("REHOR_MEMORY_API"))
+    parser.add_argument("--jira-filter", default=os.environ.get("JIRA_FILTER_ID", "107017"))
     parser.add_argument("--skip-cycles", action="store_true")
     parser.add_argument("--no-clone-config-repos", action="store_true")
     args = parser.parse_args()
@@ -45,7 +48,7 @@ def main():
             raise RuntimeError("collector produced no run directory")
         run = run_dirs[-1]
         print(f"[2/3] Analyzing task artifacts: {run}", flush=True)
-        sys.argv = ["analyze_rehor_tasks.py", "--output-dir", str(run)]
+        sys.argv = ["analyze_rehor_tasks.py", "--output-dir", str(run), "--input", str(run / "memory.json")]
         if args.memory_api:
             sys.argv.extend(["--api", args.memory_api])
         analyze_rehor_tasks.main()

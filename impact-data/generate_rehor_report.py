@@ -91,6 +91,7 @@ def build_context(run: Path):
         "bot_github": identity(activity, "github"),
         "bot_gitlab": identity(activity, "gitlab"),
         "inventory": inventory,
+        "warnings": reconciliation.get("warnings", []),
     }
 
 

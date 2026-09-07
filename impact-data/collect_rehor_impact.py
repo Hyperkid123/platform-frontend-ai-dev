@@ -19,7 +19,7 @@ import subprocess
 import sys
 import urllib.parse
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 DEFAULT_MEMORY_API = (
@@ -145,15 +145,37 @@ def fetch_git_activity():
     gl_env = {"GITLAB_TOKEN": bot_gl_token} if bot_gl_token else None
     authors = [x for x in os.environ.get("GH_AUTHORS", "platex-rehor-bot").split(",") if x]
     github = []
+    github_warnings = []
     for author in authors:
-        page = 1
-        while True:
-            query = urllib.parse.quote(f"author:{author} type:pr")
-            result = cli_json(["gh", "api", f"search/issues?q={query}&per_page=100&page={page}"], gh_env)
-            github.append(result)
-            if not result.get("ok") or len(result.get("data", {}).get("items", [])) < 100:
-                break
-            page += 1
+        ranges = [(date(2020, 1, 1), date.today())]
+        while ranges:
+            start, end = ranges.pop()
+            query_text = f"author:{author} type:pr created:{start.isoformat()}..{end.isoformat()}"
+            query = urllib.parse.quote(query_text)
+            first = cli_json(["gh", "api", f"search/issues?q={query}&per_page=100&page=1"], gh_env)
+            github.append(first)
+            if not first.get("ok"):
+                continue
+            data = first.get("data", {})
+            total = data.get("total_count", 0)
+            incomplete = data.get("incomplete_results", False)
+            if (total > 1000 or incomplete) and start < end:
+                midpoint = start + (end - start) // 2
+                ranges.extend([(start, midpoint), (midpoint + timedelta(days=1), end)])
+                github.pop()
+                continue
+            if total > 1000 or incomplete:
+                github_warnings.append(f"GitHub search truncated for {query_text}")
+            page = 2
+            while len(data.get("items", [])) < total and len(data.get("items", [])) < 1000:
+                result = cli_json(["gh", "api", f"search/issues?q={query}&per_page=100&page={page}"], gh_env)
+                github.append(result)
+                if not result.get("ok"):
+                    break
+                data["items"] = data.get("items", []) + result.get("data", {}).get("items", [])
+                if len(result.get("data", {}).get("items", [])) < 100:
+                    break
+                page += 1
 
     gitlab = []
     host = os.environ.get("GITLAB_HOST", "gitlab.cee.redhat.com")
@@ -202,6 +224,7 @@ def fetch_git_activity():
         },
         "github": github,
         "gitlab": gitlab,
+        "github_search_warnings": github_warnings,
     }
 
 
@@ -409,10 +432,14 @@ def reconcile(jira, memory, git_activity, inventory):
             "github": [x.get("ok", False) for x in git_activity.get("github", [])],
             "gitlab": [x.get("ok", False) for x in git_activity.get("gitlab", [])],
         },
+        "warnings": git_activity.get("github_search_warnings", []),
     }
 
 
 def main():
+    root = Path(__file__).resolve().parent.parent
+    load_dotenv(root / ".env")
+    load_dotenv(root / ".env.report")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-o", "--output-dir", default="impact-data/runs")
     parser.add_argument("--app-interface", default=os.path.expanduser("~/insights/app-interface"))
@@ -421,9 +448,6 @@ def main():
     parser.add_argument("--skip-cycles", action="store_true")
     parser.add_argument("--no-clone-config-repos", action="store_true")
     args = parser.parse_args()
-
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env.report")
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output = Path(args.output_dir) / run_id
     output.mkdir(parents=True, exist_ok=True)
@@ -436,6 +460,7 @@ def main():
         "config": {"jira_filter": args.jira_filter, "memory_api": args.memory_api, "app_interface": args.app_interface},
     }
     write_json(output / "manifest.json", sources)
+    source_errors = []
 
     try:
         print("[collector] Jira: fetching filter and issues", flush=True)
@@ -445,6 +470,7 @@ def main():
     except Exception as error:
         jira = {"error": str(error), "issues": []}
         write_json(output / "jira-error.json", jira)
+        source_errors.append(f"Jira: {error}")
 
     try:
         print(
@@ -463,9 +489,16 @@ def main():
     except Exception as error:
         memory = {"error": str(error), "tasks": [], "instances": []}
         write_json(output / "memory-error.json", memory)
+        source_errors.append(f"Rehor API: {error}")
 
     print("[collector] GitHub/GitLab: fetching bot identities and activity", flush=True)
     git_activity = fetch_git_activity()
+    for source, result in git_activity.get("bot_cli_identity", {}).items():
+        if not result.get("ok"):
+            source_errors.append(f"{source} bot identity: {result.get('error', 'unknown error')}")
+    for source, pages in (("GitHub", git_activity.get("github", [])), ("GitLab", git_activity.get("gitlab", []))):
+        if any(not page.get("ok") for page in pages):
+            source_errors.append(f"{source} activity query failed")
     print("[collector] app-interface: scanning tracked deployment/config files", flush=True)
     inventory = inventory_app_interface(Path(args.app_interface))
     if not args.no_clone_config_repos:
@@ -475,6 +508,9 @@ def main():
     write_json(output / "app-interface.json", inventory)
     reconciliation = reconcile(jira, memory, git_activity, inventory)
     write_json(output / "reconciliation.json", reconciliation)
+    if source_errors:
+        write_json(output / "collection-errors.json", {"errors": source_errors})
+        raise RuntimeError("Required source collection failed: " + "; ".join(source_errors))
     print(
         f"[collector] identities: {reconciliation['canonical_identity_count']} canonical, "
         f"{reconciliation['canonical_unresolved_identity_count']} unresolved",

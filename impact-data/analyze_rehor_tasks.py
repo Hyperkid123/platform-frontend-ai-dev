@@ -37,6 +37,10 @@ def fetch_tasks(api):
             return tasks
 
 
+def load_tasks(path):
+    return json.loads(path.read_text()).get("tasks", [])
+
+
 def refs(task):
     blob = json.dumps(task, ensure_ascii=False, default=str)
     return {
@@ -54,9 +58,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-o", "--output-dir", default="impact-data/task-analysis")
     parser.add_argument("--api", default=DEFAULT_API)
+    parser.add_argument("--input", type=Path)
     args = parser.parse_args()
 
-    tasks = fetch_tasks(args.api)
+    input_path = args.input or Path(args.output_dir) / "memory.json"
+    tasks = load_tasks(input_path) if input_path.exists() else fetch_tasks(args.api)
     rows = []
     jira_keys, github_prs, gitlab_mrs = set(), set(), set()
     for task in tasks:
