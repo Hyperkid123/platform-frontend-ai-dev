@@ -1,17 +1,17 @@
 # Dev proxy — build custom Caddy from source on UBI (passes EC)
-FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:8d2d83261cbc8854b8c93b1237d7d4aa0069bdb93e2974d980bc7788db56f8f4 AS dev-proxy-builder
+FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:5e68f09a652ac6627a83c57655e42e24575efb278b54336039c9308607fc6b21 AS dev-proxy-builder
 COPY dev-proxy/ /tmp/dev-proxy/
 RUN cd /tmp/dev-proxy \
     && go build -o /tmp/caddy .
 
 # Build executor thin client (gh/glab shim that forwards via UDS to proxy sidecar)
-FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:8d2d83261cbc8854b8c93b1237d7d4aa0069bdb93e2974d980bc7788db56f8f4 AS executor-client-builder
+FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:5e68f09a652ac6627a83c57655e42e24575efb278b54336039c9308607fc6b21 AS executor-client-builder
 WORKDIR /build
 COPY proxy/executor/ .
 RUN go mod download \
     && CGO_ENABLED=0 go build -o /tmp/executor-client ./cmd/client
 
-FROM registry.access.redhat.com/ubi9/ubi:latest
+FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:b0288b22a9c4ac633625bd9c8f9e39c0ad3043990d0fc8f9c62d60740af0e73e
 
 # System deps + Python 3.12 + Chromium runtime libraries
 RUN dnf install -y --nodocs --allowerasing \
@@ -46,11 +46,10 @@ RUN dnf install -y --nodocs --allowerasing \
     libXrandr \
     && dnf clean all
 
-# Node.js 22 (official binary tarball)
+# Node.js 24 LTS (official binary tarball; includes npm 11.19.0 and tar >= 7.5.19)
 RUN ARCH=$(uname -m | sed 's/x86_64/x64/' | sed 's/aarch64/arm64/') \
-    && curl -fsSL "https://nodejs.org/dist/v22.15.0/node-v22.15.0-linux-${ARCH}.tar.gz" \
+    && curl -fsSL "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-${ARCH}.tar.gz" \
     | tar -xz -C /usr/local --strip-components=1
-
 
 # Headless Chromium via Playwright (avoids EPEL/CentOS RPMs)
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers

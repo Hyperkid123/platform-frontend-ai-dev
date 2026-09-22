@@ -12,6 +12,7 @@ graph TB
         Jira["Jira Cloud<br/>(RHCLOUD project)"]
         GHGL["GitHub / GitLab<br/>(target repos)"]
         Vertex["Vertex AI<br/>(Claude API)"]
+        OpenAI["OpenAI API"]
     end
 
     subgraph System["Řehoř System"]
@@ -28,6 +29,7 @@ graph TB
             Squid["Squid<br/>(port 3128)"]
             Executor["Executor Server<br/>(gRPC)"]
             VertexProxy["Vertex Auth Proxy<br/>(port 8443)"]
+            OpenAIProxy["OpenAI Auth Proxy<br/>(port 8450)"]
             JiraMCP["mcp-atlassian<br/>(Jira workflow integration)<br/>(port 8444)"]
         end
     end
@@ -44,6 +46,7 @@ graph TB
     Agent -- "workflow source (streamable HTTP)" --> JiraMCP
     Agent -- "git push / gh / glab / gpg" --> Executor
     Agent -- "Vertex AI requests" --> VertexProxy
+    Agent -- "OpenAI Chat Completions" --> OpenAIProxy
     Agent -- "HTTP/HTTPS" --> Squid
     Agent --> Repos
     Repos --> GHGL
@@ -51,7 +54,11 @@ graph TB
     MemMCP --> PG
     Squid --> GHGL
     VertexProxy --> Vertex
+    OpenAIProxy --> OpenAI
 ```
+
+This diagram shows the active production path. The TypeScript coordinator is
+currently a contract and test scaffold; it is not invoked by `bot/run.py` yet.
 
 ## Components
 
@@ -75,6 +82,56 @@ The Python process that orchestrates the agent loop. It is **not** the brains �
 5. When the cycle ends, the runner calls `record_cost()` and sleeps
 
 The runner uses a file lock (`.lock`) to prevent concurrent instances. It handles SIGINT/SIGTERM for clean shutdown.
+
+### Coordinator (`coordinator/`)
+
+The coordinator is the provider-neutral control-plane boundary for the runtime
+migration. It will move cycle orchestration out of SDK-specific code without
+moving workflow policy, credentials, or external services into an agent
+runtime.
+
+Current status: **scaffolding only**. Production continues through
+`bot/run.py` and `bot/agent.py`. The package currently provides:
+
+- versioned run and event schemas;
+- an `AgentRuntime` port with no provider SDK types;
+- event validation, ordering, deduplication, attribution, terminal-state, and
+  usage contracts;
+- a fake runtime and contract fixtures for adapter development;
+- Node 22/npm tests, typecheck, a Vite Node bundle with TypeScript
+  declaration emit, audit, pre-push, and CI coverage.
+
+The coordinator owns the complete command for one model attempt: label,
+workflow, assembled prompt, optional task identity, workspace snapshot,
+provider/model selection, policy/config hashes, and limits. It consumes a
+normalized event stream and later projects those events into the existing
+status, cost, transcript, and cycle-run APIs.
+
+Runtime adapters own only runtime-specific process/session setup, event
+translation, cancellation, and cleanup. Raw Claude or OpenCode SDK objects must
+not cross the port.
+
+```mermaid
+graph LR
+    Loop["Cycle policy and preflight"] --> Coordinator["Rehor Coordinator"]
+    Coordinator --> Runtime["AgentRuntime port"]
+    Runtime --> ClaudeRuntime["Claude adapter"]
+    Runtime --> OpenCodeRuntime["OpenCode adapter"]
+    ClaudeRuntime --> Events["Normalized Rehor events"]
+    OpenCodeRuntime --> Events
+    Events --> Coordinator
+    Coordinator --> Existing["Status / costs / transcripts / cycle runs"]
+```
+
+Compatibility with the current Python path is explicit: task identity may be
+unknown at cycle start, dynamic preflight content is part of the run prompt,
+terminal events carry current result and `CycleContext` fields, and usage
+events preserve token/cache/cost records. Preflight `skip` and `error` paths
+remain outside `AgentRuntime` and create no model session.
+
+See [the coordinator contract](coordinator/README.md) and the
+[OpenCode migration design](docs/migrations/opencode-migration.md) for detailed
+invariants, parity mapping, and rollout phases.
 
 ### Claude Code (Agent)
 
@@ -367,6 +424,41 @@ The proxy:
 - Logs model, method, status, and duration for every request
 - Runs inside the same `executor-server` binary (no separate process)
 
+### OpenAI-Compatible Auth Proxy
+
+A sibling listener on port 8450 does the same job for the OpenAI Chat Completions
+and Responses APIs, so an OpenCode runtime can use OpenAI without `OPENAI_API_KEY`
+ever entering the bot container. Vertex on 8443 is unchanged and remains the Claude path.
+
+```mermaid
+sequenceDiagram
+    participant Client as OpenAI-compatible client<br/>(OpenCode)
+    participant Proxy as OpenAI Auth Proxy<br/>(port 8450)
+    participant OpenAI as api.openai.com
+
+    Client->>Proxy: POST /v1/chat/completions or /v1/responses<br/>(dummy/placeholder Authorization)
+    Proxy->>Proxy: Read body.model → check allowlist
+    Proxy->>Proxy: Overwrite Authorization with the real key
+    Proxy->>OpenAI: same path<br/>(authenticated, path unchanged)
+    OpenAI-->>Proxy: Streaming SSE response
+    Proxy-->>Client: Streaming SSE response (passthrough)
+```
+
+The proxy:
+- Starts only when `OPENAI_API_KEY` is set; a missing allowlist is a fatal config error
+- Serves `GET /healthz`, `GET /v1/models`, `POST /v1/chat/completions`, and `POST /v1/responses`.
+  Everything else (embeddings, completions, wrong methods) returns 404
+- Answers `GET /v1/models` from `OPENAI_ALLOWED_MODELS` locally instead of proxying,
+  so OpenAI's full catalog is never exposed
+- Reads `model` from the JSON request body (unlike Vertex, which reads it from the URL)
+  and returns 403 for models outside the allowlist
+- Overwrites any inbound `Authorization`, `OpenAI-Organization`, and `OpenAI-Project`
+  headers, so a stolen or placeholder client key is never forwarded
+- Forwards the request path unchanged — the client already sends `/v1/...`
+- Streams SSE unbuffered so tool-call deltas and the final usage chunk pass through
+- Logs model, stream flag, status, request ID, and duration — never the body or key
+- Runs inside the same `executor-server` binary (no separate process)
+
 ### Layer 5: Container Hardening
 
 - `no-new-privileges` — prevents privilege escalation
@@ -380,11 +472,13 @@ The proxy:
 | Service | Auth Method | Runs in | Config |
 |---------|-------------|---------|--------|
 | Claude (Vertex AI) | GCP service account → OAuth2 Bearer | **Proxy** | SA key decoded from `GOOGLE_SA_KEY_B64`, Vertex auth proxy on port 8443 injects tokens |
+| OpenAI | API key → Bearer | **Proxy** | `OPENAI_API_KEY` + `OPENAI_ALLOWED_MODELS`, OpenAI-compatible auth proxy on port 8450 injects the Bearer token |
 | Jira | API token | **Proxy** | `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN` → mcp-atlassian on port 8444; bot connects via `JIRA_MCP_URL` |
 | GitHub | PAT (`GH_TOKEN`) | **Proxy** | Config file at `~/.config/gh/hosts.yml` in proxy container |
 | GitLab | PAT (`GITLAB_TOKEN`) | **Proxy** | Config file at `~/.config/glab-cli/config.yml` in proxy container |
 | GPG signing | Private key | **Proxy** | Imported from `GPG_PRIVATE_KEY_B64` at proxy startup |
-| Memory server | None (internal network) | — | `http://memory-server:8080` (Docker) or `http://localhost:8080` (host) |
+| Memory server (dashboard) | OpenShift oauth-proxy SSO on Route | — | Route → oauth-proxy :8443 → memory-server :8080 |
+| Memory server (MCP/API) | None (cluster-internal) | — | `http://devbot-memory-server:8080` (OpenShift) or `http://memory-server:8080` (Docker) |
 | Chrome DevTools | None (localhost) | Bot | `http://127.0.0.1:9222` |
 
 ## Deployment Considerations (Cluster)
@@ -406,7 +500,7 @@ This keeps the deployment simple — one memory server serves all bot instances,
 
 Both images use Red Hat UBI9 base images:
 
-- **Bot container** (`Dockerfile`) — `ubi9/ubi` with Python 3.12, Node.js 22 (official binary tarball), Chromium headless (via Playwright), Go (multiple versions), gh/glab/gpg thin client shims, bubblewrap (sandbox), uv. Runs as non-root `botuser` (Claude Code rejects root). Entrypoint syncs remote config repo, configures git credential helpers (routing through thin client shims to the proxy), and launches the bot runner. All secrets live in the proxy container — the bot never sees them. Git uses HTTPS with credential helpers, not SSH. Runner instances can be built from `Dockerfile.runner` via git submodule (see README).
+- **Bot container** (`Dockerfile`) — `ubi9/ubi` with Python 3.12, Node.js 24 (official binary tarball), Chromium headless (via Playwright), Go (multiple versions), gh/glab/gpg thin client shims, bubblewrap (sandbox), uv. Runs as non-root `botuser` (Claude Code rejects root). Entrypoint syncs remote config repo, configures git credential helpers (routing through thin client shims to the proxy), and launches the bot runner. All secrets live in the proxy container — the bot never sees them. Git uses HTTPS with credential helpers, not SSH. Runner instances can be built from `Dockerfile.runner` via git submodule (see README). The coordinator is not copied into or launched by the production image yet; a later runtime-adapter slice will add its supported Node/OpenCode runtime.
 
 - **Memory server** (`memory-server/Dockerfile`) — multi-stage build. Stage 1: `ubi9/nodejs-22` builds the React dashboard. Stage 2: `ubi9/python-312-minimal` runs the FastMCP app with dashboard assets baked in.
 

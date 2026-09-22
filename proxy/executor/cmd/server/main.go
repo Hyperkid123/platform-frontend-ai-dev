@@ -40,6 +40,8 @@ var (
 
 	screenshotListen = flag.String("screenshot-listen", ":8446", "screenshot upload proxy listen address")
 
+	openaiListen = flag.String("openai-listen", ":8450", "openai-compatible auth proxy listen address")
+
 	glitchtipListen = flag.String("glitchtip-listen", ":8448", "glitchtip auth proxy listen address")
 	glitchtipURL    = flag.String("glitchtip-url", "", "upstream GlitchTip URL")
 	glitchtipToken  = flag.String("glitchtip-token", "", "GlitchTip API token")
@@ -224,6 +226,9 @@ func main() {
 	if v := os.Getenv("GCP_REGION"); v != "" {
 		*vertexRegion = v
 	}
+	if v := os.Getenv("OPENAI_AUTH_LISTEN"); v != "" {
+		*openaiListen = v
+	}
 	if v := os.Getenv("JIRA_AUTH_LISTEN"); v != "" {
 		*jiraListen = v
 	}
@@ -298,10 +303,34 @@ func main() {
 		}()
 	}
 
+	// OpenAI-compatible gateway. Off unless a key is present, so Claude-only
+	// deploys keep working; fail closed on a missing allowlist like Vertex.
+	var openaiSrv *http.Server
+	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
+		op := executor.OpenAIPolicyFromEnv()
+		if err := executor.ValidateOpenAIConfig(apiKey, op); err != nil {
+			log.Fatalf("openai config: %v", err)
+		}
+		handler := executor.InstrumentHTTPHandler("openai", executor.NewOpenAIProxy(apiKey, op))
+		openaiSrv = &http.Server{Addr: *openaiListen, Handler: handler}
+		go func() {
+			log.Printf("openai-auth-proxy listening on %s", *openaiListen)
+			if err := openaiSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("openai proxy: %v", err)
+			}
+		}()
+	}
+
 	var gitAuthSrv *http.Server
 	// Keep Git auth opt-in until deployment exposes 8447 and moves GlitchTip off it.
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("GIT_AUTH_ENABLED")), "true") &&
 		(os.Getenv("GH_TOKEN") != "" || os.Getenv("GITLAB_TOKEN") != "") {
+		if err := executor.ValidateGitAuthConfig(); err != nil {
+			log.Fatalf("git auth config: %v", err)
+		}
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("GITLAB_TLS_SKIP_VERIFY")), "true") {
+			log.Printf("WARNING: GITLAB_TLS_SKIP_VERIFY=true disables TLS certificate verification for gitlab.cee.redhat.com")
+		}
 		handler := executor.InstrumentHTTPHandler("gitauth", executor.NewGitAuthProxy())
 		gitAuthSrv = &http.Server{Addr: *gitAuthListen, Handler: handler}
 		go func() {
@@ -364,6 +393,9 @@ func main() {
 		defer cancel()
 		if vertexSrv != nil {
 			vertexSrv.Shutdown(ctx)
+		}
+		if openaiSrv != nil {
+			openaiSrv.Shutdown(ctx)
 		}
 		if gitAuthSrv != nil {
 			gitAuthSrv.Shutdown(ctx)

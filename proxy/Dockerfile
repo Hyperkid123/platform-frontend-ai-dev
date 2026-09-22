@@ -1,12 +1,12 @@
 # Build executor binaries
-FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:8d2d83261cbc8854b8c93b1237d7d4aa0069bdb93e2974d980bc7788db56f8f4 AS executor-builder
+FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:5e68f09a652ac6627a83c57655e42e24575efb278b54336039c9308607fc6b21 AS executor-builder
 WORKDIR /build
 COPY executor/ .
 RUN go mod download \
     && CGO_ENABLED=0 go build -o /tmp/executor-server ./cmd/server \
     && CGO_ENABLED=0 go build -o /tmp/executor-client ./cmd/client
 
-FROM registry.access.redhat.com/ubi9/ubi:latest
+FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:b0288b22a9c4ac633625bd9c8f9e39c0ad3043990d0fc8f9c62d60740af0e73e
 
 # Squid + GPG + Python 3.11 (gnupg2 for commit signing, python3.11 for mcp-atlassian which requires >=3.10)
 RUN dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm \
@@ -48,6 +48,7 @@ EXPOSE 8446
 EXPOSE 8444
 EXPOSE 8447
 EXPOSE 8448
+EXPOSE 8450
 USER squid
 
 CMD ["/usr/local/bin/start.sh"]

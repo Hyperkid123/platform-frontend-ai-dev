@@ -13,7 +13,8 @@ memory integrations.
 
 | Document | Description |
 |----------|-------------|
-| [Architecture](ARCHITECTURE.md) | System design, credential isolation, component overview |
+| [Architecture](ARCHITECTURE.md) | Current system, coordinator migration boundary, credential isolation |
+| [Coordinator](coordinator/README.md) | Provider-neutral runtime contract, invariants, and Python compatibility |
 | [Setup](SETUP.md) | Local development setup and configuration |
 | [Operations](OPERATIONS.md) | Production operations, monitoring, troubleshooting |
 | [Onboarding a New Instance](docs/onboarding-new-instance.md) | Step-by-step guide for adding a new bot instance |
@@ -32,7 +33,7 @@ Before setting up the bot, make sure you have the following installed:
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Agent runtime (bundled with the SDK) | `npm install -g @anthropic-ai/claude-code` |
 | [uv](https://docs.astral.sh/uv/) | Python package manager | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | [Podman](https://podman.io/) or Docker | Memory server, target repo dev environments | `brew install podman` or install Docker |
-| [Node.js](https://nodejs.org/) + npm | TypeScript LSP server | `brew install node` or via nvm |
+| [Node.js](https://nodejs.org/) 22 + npm | TypeScript LSP, coordinator, and dashboard development and verification | `brew install node` or via nvm |
 | [jq](https://jqlang.github.io/jq/) | JSON processing | `brew install jq` |
 | [gh](https://cli.github.com/) | GitHub CLI | `brew install gh` then `gh auth login` |
 | [glab](https://gitlab.com/gitlab-org/cli) | GitLab CLI (only for GitLab repos) | `brew install glab` then `glab auth login --hostname gitlab.cee.redhat.com` |
@@ -92,6 +93,7 @@ make logs              # Tail bot log
 make memory-server     # Start memory server + postgres (standalone)
 make memory-server-stop # Stop standalone memory server
 make dashboard         # Build the dashboard UI
+make coordinator-verify # Test, typecheck, and build coordinator scaffold
 make costs             # Show all cost data
 make costs-today       # Show today's costs
 make costs-week        # Show this week's costs
@@ -107,6 +109,8 @@ BOT_INSTANCE_ID=my-local-bot uv run dev-bot --label <your-label>
 ```
 
 ## How it works
+
+The production bot currently operates through the Python runner and Claude Agent SDK. The TypeScript [coordinator](coordinator/README.md) is a tested migration boundary and is not on the production execution path yet.
 
 The bot operates in **cycles**. Each cycle, it evaluates all of its tracked work and acts on exactly one item, following a strict priority order:
 
@@ -444,6 +448,7 @@ graph LR
 - **Git credential helpers** are configured globally so `git push` transparently authenticates via the thin client → proxy path.
 - **GPG commit signing** works the same way — git invokes `gpg --sign` which routes through the thin client to the proxy's GPG keyring.
 - **Vertex AI auth proxy** (port 8443) — the bot sends unauthenticated requests to the proxy's embedded HTTP server. The proxy injects OAuth2 Bearer tokens from the GCP service account, rewrites dummy project/region values to real ones, enforces a model allowlist, and forwards to the Vertex AI API. The bot never sees the SA key or tokens.
+- **OpenAI-compatible auth proxy** (port 8450) — the same pattern for OpenAI Chat Completions and Responses. The proxy overwrites the inbound `Authorization` header with the real key, enforces `OPENAI_ALLOWED_MODELS` from the request body, and serves `/healthz`, `/v1/models`, `/v1/chat/completions`, and `/v1/responses`. Off unless `OPENAI_API_KEY` is set; the bot never sees the key.
 - **Jira MCP server** (port 8444) — mcp-atlassian runs inside the proxy container with the Jira API token. The bot connects via streamable HTTP transport — no Jira credentials in the bot container.
 - **HTTP/HTTPS traffic** is routed through Squid with a domain allowlist — the bot container has no direct internet access.
 - **Bash hooks** (`.claude/hooks/validate-bash.sh`) block dangerous commands (curl, eval, credential reads) as an additional defense layer.

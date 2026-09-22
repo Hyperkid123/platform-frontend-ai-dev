@@ -129,6 +129,12 @@ objects:
               secretKeyRef:
                 name: devbot-secrets
                 key: bot-gl-email
+          - name: GITLAB_CA_CERT_B64
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: gitlab-ca-cert-b64
+                optional: true
           - name: BOT_JIRA_EMAIL
             valueFrom:
               secretKeyRef:
@@ -229,6 +235,8 @@ objects:
       - port: 8444
         protocol: TCP
       - port: 8446
+        protocol: TCP
+      - port: 8450
         protocol: TCP
     - to:
       - podSelector:

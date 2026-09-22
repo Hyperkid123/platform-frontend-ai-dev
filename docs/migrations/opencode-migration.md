@@ -79,6 +79,34 @@ OpenCode is an agent runtime, not replacement for every existing proxy. The
 proxy remains credential and egress boundary. OpenCode remains execution
 boundary inside each bot pod.
 
+## Coordinator Boundary
+
+The TypeScript code in `coordinator/` is Rehor's provider-neutral control
+plane. It does not replace the Python runner yet and does not contain an
+OpenCode adapter. It defines the stable boundary that both the current Claude
+runtime and future OpenCode runtime must implement.
+
+The coordinator owns run identity, assembled prompt, workspace and provider
+attribution, limits, cancellation, normalized event ordering, terminal state,
+and usage data. Runtime adapters own SDK-specific server/session lifecycle and
+translate SDK messages into Rehor events. SDK objects never cross the
+`AgentRuntime` port.
+
+The v1 contract intentionally supports current Python behavior:
+
+- a run carries the label, workflow, fully assembled prompt, provider/model,
+  maximum turns, and cycle timeout;
+- `task` is nullable because triage starts before a task is selected;
+- terminal payloads preserve result text, no-work classification, duration,
+  turns, and `CycleContext` fields;
+- usage payloads preserve input, output, reasoning, cache-read, and cache-write
+  tokens plus cost, including partial usage on interruption;
+- preflight `skip` and `error` remain coordinator-owned paths that do not start
+  an agent runtime.
+
+See the [coordinator runtime contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md)
+for invariants, compatibility mapping, and development commands.
+
 ## OpenCode Server Lifecycle
 
 OpenCode supports runner-owned and client-only modes. The following is an API
@@ -173,10 +201,11 @@ into the proxy deployment.
 ```text
 OpenCode in bot pod
   → http://devbot-proxy:8450/v1/chat/completions
+     or http://devbot-proxy:8450/v1/responses
   → proxy authenticates bot request
   → proxy validates provider/model
   → proxy adds Authorization: Bearer <OpenAI key>
-  → https://api.openai.com/v1/chat/completions
+  → https://api.openai.com (same path, unchanged)
   → streaming response back to OpenCode
 ```
 
@@ -232,9 +261,12 @@ silently rewriting arbitrary JSON.
 ### Proxy Endpoint Contract
 
 Initial OpenAI route should support the Chat Completions contract because it is
-widely supported by OpenCode's `@ai-sdk/openai-compatible` provider:
+widely supported by OpenCode's `@ai-sdk/openai-compatible` provider, and the
+Responses contract because OpenCode's native `@ai-sdk/openai` provider (default
+for reasoning models) sends `POST /v1/responses`:
 
 - `POST /v1/chat/completions`
+- `POST /v1/responses`
 - `GET /v1/models`
 - streaming responses using SSE
 - tool calls and tool results
@@ -289,10 +321,11 @@ until OpenAI account access, pricing, tool support, and regional requirements
 are confirmed.
 
 Provider selection remains independent from runtime selection. During canary,
-OpenCode may select either the existing Vertex route or the OpenAI Chat
-Completions route. If a selected model requires OpenAI Responses API semantics,
-use OpenCode's native `@ai-sdk/openai` provider and add a separately tested
-Responses route; do not translate request schemas inside header injection.
+OpenCode may select either the existing Vertex route or the OpenAI gateway
+(`@ai-sdk/openai-compatible` → Chat Completions, `@ai-sdk/openai` → Responses).
+The proxy serves both `POST /v1/chat/completions` and `POST /v1/responses` with
+the same header-injection handler; do not translate request schemas inside the
+proxy.
 
 ## Vertex-to-OpenAI Migration
 
@@ -329,6 +362,16 @@ rollout without changing central routing for existing Claude-based instances.
 
 ## Runtime Migration
 
+### Preparation: Runtime Contract
+
+- Define versioned `RehorRun` and `RehorEvent` schemas.
+- Validate the same schemas at runtime and in fixture tests.
+- Enforce event identity, sequence, attribution, terminal, and usage invariants.
+- Protect the package with Node 22/Vitest tests, typecheck, a Vite Node bundle
+  with declaration emit, npm audit, and CI.
+- Keep production on `bot/run.py` and `bot/agent.py` until an adapter and
+  coordinator loop pass parity tests.
+
 ### Phase 1: Compatibility Canary
 
 - Add OpenCode runtime and TypeScript runner beside Python runner.
@@ -351,8 +394,10 @@ Replace `claude-agent-sdk` usage in `bot/agent.py` with SDK operations:
 - abort session on timeout or shutdown
 - close server during cycle cleanup and process termination
 
-Preserve current `CycleContext`, status updates, transcript storage, cost
-posting, turn limits, and signal handling.
+Project normalized terminal and usage events back into the current
+`CycleContext`, status updates, transcript storage, cost posting, turn limits,
+and signal handling contracts. During canary, compare these projections with
+the Python records for the same fixture scenarios.
 
 ### Phase 3: Config and Persona Port
 
@@ -466,7 +511,7 @@ Rollback:
 - Does selected OpenAI model support required tool-call and vision behavior?
 - Is OpenAI data retention policy acceptable for Rehor ticket and source-code data?
 - Do regional or organizational restrictions require a different OpenAI endpoint?
-- Should proxy support Responses API later, or standardize on Chat Completions first?
+- ~~Should proxy support Responses API later, or standardize on Chat Completions first?~~ Served: both `POST /v1/chat/completions` and `POST /v1/responses`.
 - Which existing cost fields map reliably to OpenAI usage fields?
 - Should a future persistent-volume design support server reuse across cycles?
 
@@ -484,5 +529,6 @@ Rollback:
 - [OpenAI Chat Completions](https://platform.openai.com/docs/api-reference/chat/create)
 - [OpenAI Responses](https://platform.openai.com/docs/api-reference/responses)
 - [Git auth proxy design](../git-auth-proxy.md)
-- [Current architecture](https://github.com/OpenShift-Fleet/rehor/blob/master/ARCHITECTURE.md)
+- [Current and migration architecture](https://github.com/OpenShift-Fleet/rehor/blob/master/ARCHITECTURE.md)
+- [Coordinator runtime contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md)
 - [Custom preflight guide](../presets/custom-preflight.md)

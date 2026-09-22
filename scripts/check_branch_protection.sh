@@ -104,6 +104,27 @@ compare_bool_setting \
   '.required_pull_request_reviews.require_code_owner_reviews // false' \
   '.required_pull_request_reviews.require_code_owner_reviews // false'
 
+# the PUT API accepts bypass allowances as slug/login strings, which is how the
+# policy file stores them, but the GET API returns them as full objects. compare
+# names on both sides, otherwise every run reports drift that cannot be fixed.
+normalize_bypass_allowances='
+  def to_names: [.[]? | if type == "object" then (.slug // .login) else . end] | sort;
+  (.required_pull_request_reviews.bypass_pull_request_allowances // {})
+  | {
+      users: ((.users // []) | to_names),
+      teams: ((.teams // []) | to_names),
+      apps: ((.apps // []) | to_names)
+    }
+'
+policy_bypass_pull_request_allowances=$(jq -c "$normalize_bypass_allowances" "$POLICY_FILE")
+live_bypass_pull_request_allowances=$(echo "$live_json" | jq -c "$normalize_bypass_allowances")
+if [ "$policy_bypass_pull_request_allowances" = "$live_bypass_pull_request_allowances" ]; then
+  echo "  OK:      bypass pull request allowances = $live_bypass_pull_request_allowances"
+else
+  echo "  DRIFT:   bypass pull request allowances: policy=$policy_bypass_pull_request_allowances, live=$live_bypass_pull_request_allowances"
+  drift=1
+fi
+
 echo ""
 echo "--- Branch Up-to-Date Requirement ---"
 compare_bool_setting \
