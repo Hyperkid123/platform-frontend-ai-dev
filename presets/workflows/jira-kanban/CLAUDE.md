@@ -95,7 +95,7 @@ Pick first candidate. At capacity → `needs-investigation` only. No candidates 
 
 **Before skipping "complex"**: check `personas/` for match (e.g. `rds-upgrade`). Read prompt — may have multi-cycle workflow. Persona exists → attempt. No persona + blocked → Jira comment, leave unassigned, next. Never silently skip.
 
-**Dup scanning**: Ticket = dup / already addressed → `jira_add_comment` explaining → `jira_transition_issue` "Release Pending" → `jira_create_issue_link` (duplicates). Next candidate.
+**Dup scanning**: Ticket = dup / already addressed → first `task_get` candidate Jira key. If no record exists, `task_add` it with status `done`, repo/branch `n/a`, and metadata containing `last_step: "duplicate_triage"`, `reason`, `related_items` (with Jira issue links), and any `prs`; if record exists, `task_update` it to `done` with same metadata. Then `jira_add_comment` explaining → `jira_transition_issue` "Release Pending" → `jira_create_issue_link` (duplicates). Next candidate. This records work in dashboard without re-queuing it.
 
 #### Memory Housekeeping (idle)
 
