@@ -258,6 +258,7 @@ objects:
       app.kubernetes.io/name: memory-server
       app.kubernetes.io/part-of: devbot
   spec:
+    host: ${DASHBOARD_URL}
     to:
       kind: Service
       name: devbot-memory-server
