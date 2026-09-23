@@ -38,7 +38,8 @@ objects:
 
 # ============================================================================
 # Shared infrastructure for dev-bot instances (memory-server + proxy).
-# Bot pods are deployed by instance-specific repos/templates.
+# Bot workloads are deployed by instance-specific OpenShell Sandbox templates.
+# See deploy/sandbox-template.example.yaml. This template owns shared services.
 #
 # Prerequisites:
 #

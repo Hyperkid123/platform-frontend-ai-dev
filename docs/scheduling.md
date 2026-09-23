@@ -11,11 +11,11 @@ Scale your bot to 1 replica during a configured time window and 0 outside it. Us
 - Scales the bot Deployment to `desiredReplicas` during the configured window
 - Outside the window, scales to `minReplicaCount: 0` — the pod is completely stopped
 - No compute costs outside working hours
-- KEDA takes ownership of replica count — `BOT_REPLICAS` in the template becomes the initial value before KEDA kicks in
+- Legacy Deployment instances use KEDA for replica count. OpenShell Sandbox instances do not use `BOT_REPLICAS`; schedule Sandbox suspend/resume through the platform's supported OpenShell mechanism.
 
 ### Adding to your deploy template
 
-Add a `ScaledObject` resource to your `deploy/template.yaml`, after the NetworkPolicy:
+For legacy Deployment instances, add a `ScaledObject` resource to `deploy/template.yaml`, after the NetworkPolicy:
 
 ```yaml
 # --- Cron Scaler ---
@@ -169,7 +169,7 @@ If your team spans multiple timezones, pick the primary one and document the eff
 
 ## App-interface requirements
 
-Your SaaS file (`deploy.yml`) must include `ScaledObject.keda.sh` in `managedResourceTypes`:
+For legacy Deployment instances, your SaaS file (`deploy.yml`) must include `ScaledObject.keda.sh` in `managedResourceTypes`:
 
 ```yaml
 managedResourceTypes:

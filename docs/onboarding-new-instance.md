@@ -190,34 +190,44 @@ git commit -m "chore: update dev-bot submodule"
 
 ## Step 2: Deploy Template
 
-Create `deploy/template.yaml`. This is a **bot-only** template — it does NOT create the memory server (that comes from the primary instance). The proxy is shared by default but can optionally be deployed per-instance for custom Jira credentials.
+Create `deploy/template.yaml` from `deploy/sandbox-template.example.yaml`. This is an **OpenShell Sandbox** template — it does NOT create the memory server or proxy (those come from the primary instance).
 
-Copy from [`hcc-ui-agent-dev/deploy/template.yaml`](https://github.com/RedHatInsights/hcc-ui-agent-dev/blob/master/deploy/template.yaml) and adjust:
+Copy `deploy/sandbox-template.example.yaml` and adjust:
 
 - `metadata.name` — your instance name
 - Default `BOT_NAME` — e.g. `devbot-myteam`
 - Default `BOT_LABEL` — your Jira label
-- `BOT_IMAGE` — your Quay image path
+- `BOT_IMAGE` and `BOT_IMAGE_DIGEST` — your Quay image and immutable digest
 
 The template creates these resources:
-1. **Proxy Deployment** (optional) — own proxy with custom Jira credentials. Set `PROXY_REPLICAS=0` (default) to use the shared proxy, or `PROXY_REPLICAS=1` to deploy your own.
-2. **Proxy Service** (optional) — ClusterIP service for the per-instance proxy.
-3. **Bot Deployment** — bot container with env vars pointing to shared infra.
-4. **NetworkPolicy** — egress restricted to proxy + memory-server + DNS only. References `${PROXY_NAME}` so it correctly targets either shared or per-instance proxy.
-5. **ScaledObject** (KEDA cron scaler) — auto-scales the bot on a time-based schedule. See [Step 2b: Scheduling](#step-2b-scheduling-keda-cron-scaler).
+1. **Sandbox** — OpenShell-managed bot workload with shared proxy and memory-server env wiring.
+2. **NetworkPolicy** — egress restricted to proxy + memory-server + OpenShift DNS. Direct internet egress is absent.
+
+OpenShell prerequisites:
+- Install OpenShell gateway and `agents.x-k8s.io/v1beta1` Sandbox CRD/controller in target namespace.
+- Grant image-pull access to bot image if Quay repository is private.
+- Deploy shared `devbot-proxy`, `devbot-memory-server`, and `devbot-secrets` first.
+- Keep `BOT_IMAGE_DIGEST` pinned in app-interface.
+
+Sandbox filesystem contract:
+- `/home/botuser/app`: runner code and config; agent reads, bootstrap may update runtime files.
+- `/home/botuser/repos`: cloned target repos; agent read/write.
+- `/home/botuser/data`: caches, cycle state, merged config, reports; agent read/write.
+- `/tmp`: temporary files; agent read/write.
+- System paths read-only. Credential dirs denied. See `presets/core/CLAUDE.md` section `OpenShell Filesystem Access`.
 
 Key environment variables (already wired in the template):
 - `BOT_MEMORY_URL=http://devbot-memory-server:8080/mcp` — shared memory server
-- `EXECUTOR_ADDR=${PROXY_NAME}:9090` — executor (shared or per-instance proxy)
-- `HTTP_PROXY=http://${PROXY_NAME}:3128` — Squid proxy
-- `JIRA_MCP_URL=http://${PROXY_NAME}:8444/mcp` — Jira MCP
+- `EXECUTOR_ADDR=devbot-proxy:9090` — executor
+- `HTTP_PROXY=http://devbot-proxy:3128` — Squid proxy
+- `JIRA_MCP_URL=http://devbot-proxy:8444/mcp` — Jira MCP
 
-### Shared vs Per-Instance Proxy
+### Shared Proxy
 
-| Mode | `PROXY_REPLICAS` | `PROXY_NAME` | `JIRA_SECRET_NAME` | When to use |
-|------|-------------------|--------------|---------------------|-------------|
-| **Shared** (default) | `0` | `devbot-proxy` | `devbot-secrets` | Same Jira identity as primary instance |
-| **Per-instance** | `1` | unique name (e.g. `devbot-myteam-proxy`) | your secret name | Custom Jira credentials needed (different Jira project access) |
+| Mode | `PROXY_NAME` | `JIRA_SECRET_NAME` | When to use |
+|------|--------------|---------------------|-------------|
+| **Shared** (default) | `devbot-proxy` | `devbot-secrets` | Same Jira identity as primary instance |
+| **Per-instance** | unique name | your secret name | Custom Jira credentials; deploy proxy separately |
 
 **Why a separate proxy?** Bot pods are network-isolated — the NetworkPolicy only allows egress to the proxy and memory server. The proxy runs mcp-atlassian (Jira MCP server) with the Jira credentials baked in. To use a different Jira account, you need a separate proxy pod with different credentials. A sidecar won't work because pods in the same deployment share the same NetworkPolicy.
 
@@ -237,7 +247,7 @@ The NetworkPolicy must use `app.kubernetes.io/name: devbot-proxy` to match the s
   # ...
 ```
 
-If using a per-instance proxy (`PROXY_REPLICAS=1`), use `${PROXY_NAME}` instead (it resolves to your custom proxy name).
+If using a separately deployed per-instance proxy, use its service name instead of `devbot-proxy`.
 
 ### DNS Egress — Important
 
@@ -269,9 +279,9 @@ Using port 53 or `k8s-app: kube-dns` will cause pods to hang — they can't reso
 
 ## Step 2b: Scheduling (KEDA Cron Scaler)
 
-Every instance **must** include a KEDA `ScaledObject` in its deploy template. This controls when the bot runs — without it, you'd need to manually scale replicas up and down.
+Every instance **must** include a scheduling policy for its OpenShell Sandbox. OpenShell Sandbox does not use Deployment replicas. Use the platform's supported OpenShell suspend/resume mechanism or an external schedule; do not add a Deployment/KEDA scaler to the Sandbox template.
 
-Add the following to `deploy/template.yaml` after the NetworkPolicy:
+For legacy Deployment-based instances, add the following to `deploy/template.yaml` after the NetworkPolicy:
 
 ```yaml
 # --- Cron Scaler ---
@@ -302,7 +312,7 @@ Adjust `timezone`, `start`, and `end` to match your team's working hours. The ex
 
 For more schedule examples (US hours, weekends, split windows, etc.) and details on how multiple triggers combine, see the full [Scheduling guide](scheduling.md).
 
-**App-interface**: Your SaaS file's `managedResourceTypes` must include `ScaledObject.keda.sh` — see [Step 4](#step-4-app-interface-configuration).
+**Legacy Deployment only**: Your SaaS file's `managedResourceTypes` must include `ScaledObject.keda.sh` — see [Step 4](#step-4-app-interface-configuration).
 
 ---
 
@@ -356,11 +366,10 @@ resourceTemplates:
       $ref: /services/insights/platform-frontend-ai-dev/namespaces/stage.hcmais01ue1.yml
     ref: <git-commit-sha>
     parameters:
-      BOT_IMAGE_TAG: <git-commit-sha>
+      BOT_IMAGE_DIGEST: sha256:<image-digest>
       BOT_IMAGE: quay.io/your-org/my-bot-instance
       BOT_NAME: devbot-myteam
       BOT_LABEL: hcc-ai-myteam
-      BOT_REPLICAS: '0'                    # start disabled, enable after verification
       BOT_BOARD_NAME: 'Your Board Name'    # only used by claim-ticket for sprint assignment
       BOT_SPRINT_PREFIX: 'Your Sprint'     # only used by claim-ticket for sprint assignment
       BOT_INCLUDE_BACKLOG: 'true'
@@ -371,12 +380,6 @@ resourceTemplates:
       BOT_CONFIG_REPO: https://github.com/YourOrg/my-bot-instance.git
       BOT_CONFIG_PATH: instance/my-config
       SLACK_WEBHOOK_URL: 'https://hooks.slack.com/...'
-      # --- Per-instance proxy (optional — only if custom Jira, and other creds needed) ---
-      # PROXY_IMAGE: quay.io/redhat-services-prod/hcc-platex-services/platform-frontend-ai-dev-proxy
-      # PROXY_IMAGE_TAG: <proxy-image-sha>
-      # PROXY_REPLICAS: '1'
-      # PROXY_NAME: devbot-myteam-proxy
-      # JIRA_SECRET_NAME: myteam-jira-secrets
 ```
 
 ### Add managed resource types
@@ -385,12 +388,11 @@ Your SaaS file needs `managedResourceTypes` to include all resource kinds your t
 
 ```yaml
 managedResourceTypes:
-- Deployment
+- Sandbox.agents.x-k8s.io
 - NetworkPolicy
-- ScaledObject.keda.sh
 ```
 
-Without `ScaledObject.keda.sh`, app-interface will prune the KEDA cron scaler on every sync.
+Without `Sandbox.agents.x-k8s.io`, app-interface will prune the OpenShell Sandbox on every sync.
 
 ### Add image pattern
 
@@ -433,7 +435,7 @@ openshiftResources:
     qontract.recycle: "true"
 ```
 
-The secret needs two keys: `jira-email` and `jira-token`. Then set `JIRA_SECRET_NAME=myteam-jira-secrets` and `PROXY_REPLICAS=1` in your deploy.yml parameters so the instance gets its own proxy pod with these credentials.
+The secret needs two keys: `jira-email` and `jira-token`. Deploy a separate proxy template with `JIRA_SECRET_NAME=myteam-jira-secrets` so the Sandbox gets its own Jira identity.
 
 The shared `devbot-secrets` secret (GitHub/GitLab/GPG/GCP credentials) is still used by all instances — only the Jira identity is per-instance.
 
@@ -486,12 +488,12 @@ The shared `devbot-secrets` Vault secret provides GitHub (`gh-bot-cli-token`) an
 
 After deploying, verify in order:
 
-1. **Pod starts**: `oc get pods -l app.kubernetes.io/name=devbot-myteam`
+1. **Sandbox starts**: `oc get sandbox devbot-myteam` and `oc get pods -l app.kubernetes.io/name=devbot-myteam`
 2. **DNS works**: `oc exec <pod> -- nslookup devbot-proxy` — should resolve
 3. **Memory server reachable**: `oc exec <pod> -- curl -s http://devbot-memory-server:8080/health`
 4. **Executor reachable**: check logs for "Connected to executor at devbot-proxy:9090"
 5. **Config loaded**: check logs for remote config sync from `BOT_CONFIG_REPO`
-6. **Enable via schedule**: configure the KEDA cron scaler (see [Step 2b](#step-2b-scheduling-keda-cron-scaler)) to run during your team's working hours. Don't set `BOT_REPLICAS: '1'` permanently — use the schedule to avoid unnecessary token consumption on weekends and off-hours
+6. **Enable via schedule**: enable the OpenShell Sandbox through the platform scheduling mechanism during working hours. Avoid running continuously outside work windows to limit token consumption.
 
 ---
 
@@ -500,10 +502,9 @@ After deploying, verify in order:
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `BOT_IMAGE` | yes | Quay image path |
-| `BOT_IMAGE_TAG` | yes | Git SHA for image tag |
-| `BOT_NAME` | yes | Deployment name (e.g. `devbot-myteam`) |
+| `BOT_IMAGE_DIGEST` | yes | Immutable image digest |
+| `BOT_NAME` | yes | Sandbox name (e.g. `devbot-myteam`) |
 | `BOT_LABEL` | yes | Jira label to filter tickets |
-| `BOT_REPLICAS` | yes | Number of replicas (`'0'` to disable) |
 | `BOT_INSTANCE_ID` | yes | Human-readable name for memory server |
 | `BOT_CONFIG_REPO` | yes | Git URL for remote config repo |
 | `BOT_CONFIG_PATH` | yes | Path within config repo to `agent/` dir |
@@ -516,11 +517,8 @@ After deploying, verify in order:
 | `SLACK_WEBHOOK_URL` | no | Slack webhook — Incoming (`/services/`, recommended) or Workflow Builder (`/triggers/`) |
 | `SLACK_NOTIFY_MODE` | no | `immediate` (default) or `daily_digest`. In digest mode, individual notifications are suppressed and a daily snapshot of open PRs is sent instead. Requires `SLACK_DIGEST_HOUR` to be set. |
 | `SLACK_DIGEST_HOUR` | no | UTC hour (0-23) when daily digest is sent. Opt-in — digest is disabled unless this is set. |
-| `PROXY_IMAGE` | no | Proxy container image (only needed if `PROXY_REPLICAS=1`) |
-| `PROXY_IMAGE_TAG` | no | Proxy image tag (default: `latest`) |
-| `PROXY_REPLICAS` | no | `'0'` = use shared proxy (default), `'1'` = deploy own proxy |
-| `PROXY_NAME` | no | Proxy service name (default: `devbot-proxy`). Set to a unique name when deploying own proxy. |
-| `JIRA_SECRET_NAME` | no | Vault secret with `jira-email` + `jira-token` keys (default: `devbot-secrets`) |
+| `PROXY_NAME` | no | Shared proxy service name (`devbot-proxy`) |
+| `JIRA_SECRET_NAME` | no | Vault secret with `jira-email` + `jira-token` keys for separately deployed proxy |
 
 ---
 
