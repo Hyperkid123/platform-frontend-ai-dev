@@ -190,7 +190,7 @@ git commit -m "chore: update dev-bot submodule"
 
 ## Step 2: Deploy Template
 
-Create `deploy/template.yaml` from `deploy/sandbox-template.example.yaml`. This is an **OpenShell Sandbox** template — it does NOT create the memory server or proxy (those come from the primary instance).
+Create `deploy/template.yaml` from `deploy/sandbox-template.example.yaml`. This is an **OpenShell SandboxTemplate + SandboxWarmPool** template — it does NOT create the memory server or proxy (those come from the primary instance).
 
 Copy `deploy/sandbox-template.example.yaml` and adjust:
 
@@ -200,14 +200,17 @@ Copy `deploy/sandbox-template.example.yaml` and adjust:
 - `BOT_IMAGE` and `BOT_IMAGE_DIGEST` — your Quay image and immutable digest
 
 The template creates these resources:
-1. **Sandbox** — OpenShell-managed bot workload with shared proxy and memory-server env wiring.
-2. **NetworkPolicy** — egress restricted to proxy + memory-server + OpenShift DNS. Direct internet egress is absent.
+1. **SandboxTemplate** — OpenShell pod blueprint with managed network policy and shared proxy/memory-server wiring.
+2. **SandboxWarmPool** — OpenShell running-bot pool; one replica starts one bot.
+3. **ScaledObject** — KEDA cron schedule targeting `SandboxWarmPool`.
 
 OpenShell prerequisites:
-- Install OpenShell gateway and `agents.x-k8s.io/v1beta1` Sandbox CRD/controller in target namespace.
+- Shared platform namespace: OpenShell gateway, agent-sandbox controller, CRDs, and KEDA are already installed. Use existing shared infrastructure.
+- Standalone namespace: install OpenShell gateway, agent-sandbox controller, `extensions.agents.x-k8s.io/v1beta1` SandboxTemplate/SandboxWarmPool CRDs, and KEDA before applying this template.
 - Grant image-pull access to bot image if Quay repository is private.
 - Deploy shared `devbot-proxy`, `devbot-memory-server`, and `devbot-secrets` first.
 - Keep `BOT_IMAGE_DIGEST` pinned in app-interface.
+- Add `SandboxTemplate.agents.x-k8s.io`, `SandboxWarmPool.agents.x-k8s.io`, `ScaledObject.keda.sh`, and `NetworkPolicy` to `managedResourceTypes`.
 
 Sandbox filesystem contract:
 - `/home/botuser/app`: runner code and config; agent reads, bootstrap may update runtime files.
@@ -279,9 +282,9 @@ Using port 53 or `k8s-app: kube-dns` will cause pods to hang — they can't reso
 
 ## Step 2b: Scheduling (KEDA Cron Scaler)
 
-Every instance **must** include a scheduling policy for its OpenShell Sandbox. OpenShell Sandbox does not use Deployment replicas. Use the platform's supported OpenShell suspend/resume mechanism or an external schedule; do not add a Deployment/KEDA scaler to the Sandbox template.
+Every instance **must** include a KEDA `ScaledObject` targeting its OpenShell `SandboxWarmPool`. Set `BOT_REPLICAS` to the off-hours baseline, normally `0`; KEDA sets warm-pool replicas during configured windows.
 
-For legacy Deployment-based instances, add the following to `deploy/template.yaml` after the NetworkPolicy:
+The example template includes one cron trigger:
 
 ```yaml
 # --- Cron Scaler ---
@@ -295,7 +298,7 @@ For legacy Deployment-based instances, add the following to `deploy/template.yam
   spec:
     scaleTargetRef:
       apiVersion: apps/v1
-      kind: Deployment
+      kind: SandboxWarmPool
       name: ${BOT_NAME}
     minReplicaCount: 0
     maxReplicaCount: 1
@@ -312,7 +315,7 @@ Adjust `timezone`, `start`, and `end` to match your team's working hours. The ex
 
 For more schedule examples (US hours, weekends, split windows, etc.) and details on how multiple triggers combine, see the full [Scheduling guide](scheduling.md).
 
-**Legacy Deployment only**: Your SaaS file's `managedResourceTypes` must include `ScaledObject.keda.sh` — see [Step 4](#step-4-app-interface-configuration).
+Your SaaS file's `managedResourceTypes` must include `SandboxTemplate.agents.x-k8s.io`, `SandboxWarmPool.agents.x-k8s.io`, and `ScaledObject.keda.sh` — see [Step 4](#step-4-app-interface-configuration).
 
 ---
 
@@ -370,6 +373,7 @@ resourceTemplates:
       BOT_IMAGE: quay.io/your-org/my-bot-instance
       BOT_NAME: devbot-myteam
       BOT_LABEL: hcc-ai-myteam
+      BOT_REPLICAS: '0'                    # KEDA raises warm-pool replicas in window
       BOT_BOARD_NAME: 'Your Board Name'    # only used by claim-ticket for sprint assignment
       BOT_SPRINT_PREFIX: 'Your Sprint'     # only used by claim-ticket for sprint assignment
       BOT_INCLUDE_BACKLOG: 'true'
@@ -388,11 +392,13 @@ Your SaaS file needs `managedResourceTypes` to include all resource kinds your t
 
 ```yaml
 managedResourceTypes:
-- Sandbox.agents.x-k8s.io
+- SandboxTemplate.agents.x-k8s.io
+- SandboxWarmPool.agents.x-k8s.io
+- ScaledObject.keda.sh
 - NetworkPolicy
 ```
 
-Without `Sandbox.agents.x-k8s.io`, app-interface will prune the OpenShell Sandbox on every sync.
+Without these resource types, app-interface will prune the OpenShell resources or KEDA scaler on every sync.
 
 ### Add image pattern
 
@@ -488,12 +494,12 @@ The shared `devbot-secrets` Vault secret provides GitHub (`gh-bot-cli-token`) an
 
 After deploying, verify in order:
 
-1. **Sandbox starts**: `oc get sandbox devbot-myteam` and `oc get pods -l app.kubernetes.io/name=devbot-myteam`
+1. **Warm pool starts**: `oc get sandboxwarmpool devbot-myteam` and `oc get pods -l app.kubernetes.io/name=devbot-myteam`
 2. **DNS works**: `oc exec <pod> -- nslookup devbot-proxy` — should resolve
 3. **Memory server reachable**: `oc exec <pod> -- curl -s http://devbot-memory-server:8080/health`
 4. **Executor reachable**: check logs for "Connected to executor at devbot-proxy:9090"
 5. **Config loaded**: check logs for remote config sync from `BOT_CONFIG_REPO`
-6. **Enable via schedule**: enable the OpenShell Sandbox through the platform scheduling mechanism during working hours. Avoid running continuously outside work windows to limit token consumption.
+6. **Enable via schedule**: verify KEDA raises `SandboxWarmPool.spec.replicas` during working hours and returns it to `0` outside the window.
 
 ---
 
@@ -503,8 +509,9 @@ After deploying, verify in order:
 |-----------|----------|-------------|
 | `BOT_IMAGE` | yes | Quay image path |
 | `BOT_IMAGE_DIGEST` | yes | Immutable image digest |
-| `BOT_NAME` | yes | Sandbox name (e.g. `devbot-myteam`) |
+| `BOT_NAME` | yes | SandboxTemplate/SandboxWarmPool name (e.g. `devbot-myteam`) |
 | `BOT_LABEL` | yes | Jira label to filter tickets |
+| `BOT_REPLICAS` | no | Warm-pool baseline replicas; normally `'0'`, KEDA-managed |
 | `BOT_INSTANCE_ID` | yes | Human-readable name for memory server |
 | `BOT_CONFIG_REPO` | yes | Git URL for remote config repo |
 | `BOT_CONFIG_PATH` | yes | Path within config repo to `agent/` dir |

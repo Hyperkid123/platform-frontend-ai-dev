@@ -25,6 +25,8 @@ parameters:
   value: ""
 - name: BOT_INCLUDE_BACKLOG
   value: "false"
+- name: BOT_REPLICAS
+  value: "0"
 - name: SLACK_WEBHOOK_URL
   value: ""
 - name: GCP_PROJECT_ID
@@ -33,22 +35,72 @@ parameters:
   required: true
 - name: VERTEX_ALLOWED_MODELS
   required: true
+- name: KEDA_TIMEZONE
+  value: Europe/Prague
+- name: KEDA_CRON_START
+  value: "0 9 * * 1-5"
+- name: KEDA_CRON_END
+  value: "0 23 * * 1-5"
 objects:
 
-# OpenShell Sandbox replaces the bot Deployment. The OpenShell gateway and
-# agent-sandbox controller must already be installed in this namespace.
+# OpenShell SandboxTemplate + SandboxWarmPool replace the bot Deployment. The
+# OpenShell gateway and agent-sandbox controller must already be installed.
 # Shared proxy, memory-server, and devbot-secrets come from deploy/template.yaml.
-- apiVersion: agents.x-k8s.io/v1beta1
-  kind: Sandbox
+- apiVersion: extensions.agents.x-k8s.io/v1beta1
+  kind: SandboxTemplate
   metadata:
     name: ${BOT_NAME}
-    namespace: ${NAMESPACE}
     labels:
       app.kubernetes.io/name: ${BOT_NAME}
       app.kubernetes.io/component: bot
       app.kubernetes.io/part-of: devbot
   spec:
-    operatingMode: Running
+    networkPolicyManagement: Managed
+    networkPolicy:
+      ingress:
+      - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agent-sandbox-system
+          podSelector:
+            matchLabels:
+              app: sandbox-router
+      egress:
+      - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: devbot-proxy
+        ports:
+        - port: 3128
+          protocol: TCP
+        - port: 8443
+          protocol: TCP
+        - port: 8444
+          protocol: TCP
+        - port: 8446
+          protocol: TCP
+        - port: 8447
+          protocol: TCP
+        - port: 8448
+          protocol: TCP
+        - port: 9090
+          protocol: TCP
+      - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: memory-server
+        ports:
+        - port: 8080
+          protocol: TCP
+      - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-dns
+        ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
     podTemplate:
       metadata:
         labels:
@@ -57,7 +109,7 @@ objects:
           app.kubernetes.io/part-of: devbot
       spec:
         containers:
-        - name: sandbox
+        - name: bot
           image: ${BOT_IMAGE}@${BOT_IMAGE_DIGEST}
           imagePullPolicy: IfNotPresent
           env:
@@ -168,50 +220,40 @@ objects:
         - name: data
           emptyDir: {}
 
-# Egress stays limited to shared services and cluster DNS. Internet traffic
-# must use Squid; direct egress is intentionally absent.
-- apiVersion: networking.k8s.io/v1
-  kind: NetworkPolicy
+# KEDA scales the warm pool, not a Deployment. One replica = one running bot.
+- apiVersion: extensions.agents.x-k8s.io/v1beta1
+  kind: SandboxWarmPool
   metadata:
-    name: ${BOT_NAME}-egress
-    namespace: ${NAMESPACE}
+    name: ${BOT_NAME}
     labels:
+      app.kubernetes.io/name: ${BOT_NAME}
+      app.kubernetes.io/component: bot
       app.kubernetes.io/part-of: devbot
   spec:
-    podSelector:
-      matchLabels:
-        app.kubernetes.io/name: ${BOT_NAME}
-    policyTypes:
-    - Egress
-    egress:
-    - to:
-      - podSelector:
-          matchLabels:
-            app.kubernetes.io/name: devbot-proxy
-      ports:
-      - port: 3128
-        protocol: TCP
-      - port: 8443
-        protocol: TCP
-      - port: 8444
-        protocol: TCP
-      - port: 8446
-        protocol: TCP
-      - port: 9090
-        protocol: TCP
-    - to:
-      - podSelector:
-          matchLabels:
-            app.kubernetes.io/name: memory-server
-      ports:
-      - port: 8080
-        protocol: TCP
-    - to:
-      - namespaceSelector:
-          matchLabels:
-            kubernetes.io/metadata.name: openshift-dns
-      ports:
-      - port: 5353
-        protocol: UDP
-      - port: 5353
-        protocol: TCP
+    replicas: ${{BOT_REPLICAS}}
+    sandboxTemplateRef:
+      name: ${BOT_NAME}
+
+# KEDA cron schedule. Replace with multiple triggers when supporting several
+# working-hour windows or time zones.
+- apiVersion: keda.sh/v1alpha1
+  kind: ScaledObject
+  metadata:
+    name: ${BOT_NAME}-cron-scaler
+    labels:
+      app.kubernetes.io/name: ${BOT_NAME}
+      app.kubernetes.io/part-of: devbot
+  spec:
+    scaleTargetRef:
+      apiVersion: extensions.agents.x-k8s.io/v1beta1
+      kind: SandboxWarmPool
+      name: ${BOT_NAME}
+    minReplicaCount: 0
+    maxReplicaCount: 1
+    triggers:
+    - type: cron
+      metadata:
+        timezone: ${KEDA_TIMEZONE}
+        start: ${KEDA_CRON_START}
+        end: ${KEDA_CRON_END}
+        desiredReplicas: "1"

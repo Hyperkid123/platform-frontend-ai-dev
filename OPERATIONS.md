@@ -6,10 +6,10 @@ How to manage and monitor the bot in day-to-day use.
 
 ### OpenShell deployment
 
-Production bot workloads run as OpenShell `Sandbox` resources, not long-lived bot `Deployment` replicas. Inspect Sandbox status and its managed pod:
+Production bot workloads run as OpenShell `SandboxWarmPool` resources, not bot `Deployment` replicas. KEDA scales the warm pool during configured work windows. Inspect template, pool, and managed pods:
 
 ```bash
-oc get sandbox -l app.kubernetes.io/part-of=devbot
+oc get sandboxtemplate,sandboxwarmpool,scaledobject -l app.kubernetes.io/part-of=devbot
 oc get pods -l app.kubernetes.io/component=bot
 oc logs -l app.kubernetes.io/component=bot --tail=100
 ```

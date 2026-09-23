@@ -257,7 +257,7 @@ To update to the latest dev-bot: `git submodule update --remote dev-bot`
 
 ### Option A: OpenShift with OpenShell (recommended)
 
-The production deployment. Shared proxy and memory server run as services; each bot runs as an OpenShell `Sandbox` with explicit writable mounts and network policy. See `deploy/template.yaml`, `deploy/sandbox-template.example.yaml`, and `OPERATIONS.md`.
+The production deployment. Shared proxy and memory server run as services; each bot runs through OpenShell `SandboxTemplate` + `SandboxWarmPool`, scheduled by KEDA. See `deploy/template.yaml`, `deploy/sandbox-template.example.yaml`, and `OPERATIONS.md`.
 
 ### Option B: Bot on host (advanced)
 
