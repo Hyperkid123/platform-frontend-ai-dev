@@ -62,6 +62,36 @@ class HttpClient:
             return json.loads(response.read().decode())
 
 
+def memory_headers():
+    token = os.environ.get("REHOR_MEMORY_TOKEN")
+    if not token:
+        service_account = os.environ.get("REHOR_MEMORY_SERVICE_ACCOUNT")
+        if service_account:
+            namespace = os.environ.get(
+                "REHOR_MEMORY_SERVICE_ACCOUNT_NAMESPACE",
+                "platform-frontend-ai-dev-stage",
+            )
+            duration = os.environ.get("REHOR_MEMORY_TOKEN_DURATION", "1h")
+            result = subprocess.run(
+                [
+                    "oc",
+                    "create",
+                    "token",
+                    service_account,
+                    "--namespace",
+                    namespace,
+                    f"--duration={duration}",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode:
+                raise RuntimeError(f"oc create token failed: {result.stderr.strip()}")
+            token = result.stdout.strip()
+    return {"Authorization": f"Bearer {token}"} if token else None
+
+
 def jira_client():
     url = os.environ.get("JIRA_URL", "https://redhat.atlassian.net")
     username = os.environ.get("JIRA_USERNAME") or os.environ.get("JIRA_EMAIL")
@@ -93,7 +123,7 @@ def fetch_jira(client, filter_id: str):
 
 
 def fetch_memory(api: str, include_cycles: bool):
-    client = HttpClient(api)
+    client = HttpClient(api, memory_headers())
     instances = client.get("instances")
     costs = client.get("costs", {"days": 3650, "limit": 10000})
     analytics = client.get("analytics", {"days": 3650})
