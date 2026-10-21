@@ -295,8 +295,12 @@ def _create_separate_saas(cfg, repo_path):
     return {"file": str(saas_path.relative_to(repo_path)), "action": "created"}
 
 
+def _normalize_component_url(url):
+    return url.rstrip("/").removesuffix(".git") if isinstance(url, str) else url
+
+
 def _prepare_code_component(cfg, repo_path):
-    """Prepare a scoped insertion without changing existing YAML bytes or writing files."""
+    """Prepare a scoped component edit, preserving surrounding YAML bytes without writing files."""
     app_ref = cfg.get("app_ref", APP_REF)
     ref_path = app_ref.lstrip("/")
     app_path = _safe_path(Path(repo_path) / "data", ref_path)
@@ -319,8 +323,9 @@ def _prepare_code_component(cfg, repo_path):
     if len(fields) != 1:
         raise ValueError(f"{error_prefix}: codeComponents must be a single explicit field, not duplicated or merged")
     key, sequence = fields[0]
-    if not isinstance(sequence, yaml.SequenceNode) or not isinstance(data["codeComponents"], list):
-        raise ValueError(f"{error_prefix}: codeComponents must be a YAML list (use [] for an empty list)")
+    components = data["codeComponents"]
+    if components is not None and not isinstance(components, list):
+        raise ValueError(f"{error_prefix}: codeComponents must be a YAML list or null (use [] for an empty list)")
     if sequence.start_mark.index < key.end_mark.index or any(
         isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken))
         and sequence.start_mark.index <= token.start_mark.index < sequence.end_mark.index
@@ -328,14 +333,29 @@ def _prepare_code_component(cfg, repo_path):
     ):
         raise ValueError(f"{error_prefix}: expand anchors and aliases in codeComponents before rerunning")
 
-    components = data["codeComponents"]
-    if any(isinstance(entry, dict) and entry.get("url") == cfg["repo_url"] for entry in components):
+    components = components if components is not None else []
+    normalized_url = _normalize_component_url(cfg["repo_url"])
+    if any(
+        isinstance(entry, dict)
+        and entry.get("name") == cfg["instance_name"]
+        and _normalize_component_url(entry.get("url")) != normalized_url
+        for entry in components
+    ):
+        raise ValueError(f"{error_prefix}: component name {cfg['instance_name']!r} already uses a different URL")
+    if any(
+        isinstance(entry, dict) and _normalize_component_url(entry.get("url")) == normalized_url for entry in components
+    ):
         return None
 
     entry = {"name": cfg["instance_name"], "resource": "upstream", "url": cfg["repo_url"]}
-    # Prepend at the sequence opening: end marks can include following comments
-    # or sibling keys. This keeps every existing component and comment verbatim.
-    if sequence.flow_style:
+    # Replace only a null scalar, or prepend at the sequence opening: sequence
+    # end marks can include following comments or sibling keys.
+    replace_end = None
+    if data["codeComponents"] is None:
+        insert_at = sequence.start_mark.index
+        replace_end = sequence.end_mark.index
+        addition = " " + yaml.safe_dump([entry], default_flow_style=True, sort_keys=False, width=sys.maxsize).strip()
+    elif sequence.flow_style:
         insert_at = sequence.start_mark.index + 1
         addition = yaml.safe_dump(entry, default_flow_style=True, sort_keys=False, width=sys.maxsize).strip()
         if components:
@@ -347,7 +367,9 @@ def _prepare_code_component(cfg, repo_path):
         addition = "".join(indent + line + "\n" for line in addition.splitlines())
         if "\r\n" in content:
             addition = addition.replace("\n", "\r\n")
-    updated = content[:insert_at] + addition + content[insert_at:]
+    if replace_end is None:
+        replace_end = insert_at
+    updated = content[:insert_at] + addition + content[replace_end:]
     try:
         parsed = yaml.safe_load(updated)
     except yaml.YAMLError as exc:
@@ -357,22 +379,6 @@ def _prepare_code_component(cfg, repo_path):
     if parsed != {**data, "codeComponents": [entry, *components]}:
         raise ValueError(f"{error_prefix}: insertion would change unrelated YAML values; no changes were written")
     return app_path, updated
-
-
-def _add_code_component(cfg, repo_path):
-    """Keep the helper's legacy None result for invalid or unchanged app files."""
-    app_ref = cfg.get("app_ref", APP_REF)
-    # Path traversal remains a caller error, rather than an ignored YAML error.
-    _safe_path(Path(repo_path) / "data", app_ref.lstrip("/"))
-    try:
-        update = _prepare_code_component(cfg, repo_path)
-    except ValueError:
-        return None
-    if update is None:
-        return None
-    app_path, content = update
-    app_path.write_bytes(content.encode("utf-8"))
-    return str(app_path.relative_to(repo_path))
 
 
 def _add_self_service_datafile(cfg, repo_path):

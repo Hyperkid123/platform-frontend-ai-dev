@@ -116,21 +116,11 @@ Creates a new SaaS file in the team's own service tree at:
 
 Requires `service_tree` config. The team must work with app-sre to set up the service tree (app.yml, namespace, pipeline provider) in app-interface before the bot can generate the deploy file.
 
-## Focused Onboarding Smoke Verification
+## Output Verification and Component Formats
 
-Carry the resolved `config_name` and `config_path` from the instance generation step into this script's input. Confirm that `BOT_CONFIG_PATH` points to the profile actually generated, rather than deriving it from `instance_name` again.
+Parse the actual generated SaaS file, edited `app.yml`, and role file when self-service access was requested. Check deployment parameters, one component with the requested repository URL (allowing a trailing `/` or terminal `.git`), and unchanged existing components and sibling fields. Rerun with identical inputs and compare output bytes only after validating these files. An `action: unchanged` result alone is not validation; any returned `error` or nonzero exit status is a failure.
 
-Before reporting smoke success, inspect the actual outputs in all three generated trees:
-
-1. **Instance repository:** verify the returned file paths exist, including `deploy/template.yaml` and `instance/<config_name>/agent/instance.yaml`. Parse the generated YAML and check the selected profile path.
-2. **Konflux repository:** verify the returned `files_written` paths exist and parse the generated YAML. Check that the repository and image names match the instance inputs.
-3. **App-interface fixture:** parse the generated SaaS file and the actual edited `app.yml`, plus the role file when self-service access was requested. Check the deployment parameters, exactly one component with the requested repository URL, and unchanged existing components and sibling fields.
-
-Use isolated synthetic repositories for this focused smoke. YAML parsing checks syntax and generated values; do not install local app-interface schemas, build a schema bundle, or run full app-interface validation for this smoke.
-
-Only after these checks, rerun the generators with identical inputs and compare the generated files byte-for-byte. An `action: unchanged` result alone is not validation: the SaaS file can already exist while another output is invalid or incomplete. Treat any returned `error` or nonzero exit status as a failed smoke.
-
-The component updater supports empty and nonempty flow lists and block lists, preserving existing text and comments through a scoped insertion. New components are prepended; duplicate detection compares decoded component `url` values. Invalid YAML, non-list `codeComponents`, duplicate or merged component fields, and component anchors or aliases require correction before generation can continue. Missing app files or missing `codeComponents` remain optional skips; explicitly verify their presence when the smoke expects a component update.
+The component updater supports empty and nonempty flow lists and block lists, plus bare empty keys and explicit YAML null values, which become inline lists. It preserves surrounding text and comments through a scoped edit. New components are prepended. Duplicate detection compares decoded URLs after removing trailing slashes and a terminal `.git`; protocols and host/path case remain distinct. An equivalent URL under another name is an unchanged component, but a requested name already using a different normalized URL is an error, even if another component matches the URL. Invalid YAML, non-list/non-null `codeComponents`, duplicate or merged component fields, and component anchors or aliases require correction. Missing app files or missing `codeComponents` remain optional skips; verify their presence when expecting an update.
 
 ## Critical Gotchas
 

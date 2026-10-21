@@ -5,11 +5,11 @@ import pytest
 import yaml
 from generate_app_interface import (
     SAAS_SELF_SERVICE_REF,
-    _add_code_component,
     _add_self_service_datafile,
     _discover_gcp_project,
     _discover_namespace_ref,
     _discover_pipelines_ref,
+    _prepare_code_component,
     _yaml_quote,
     generate,
 )
@@ -518,7 +518,7 @@ class TestCodeComponent:
     def test_duplicate_matches_decoded_component_url(self, app_interface_repo, quote):
         app_path = app_interface_repo / "data/services/insights/platform-frontend-ai-dev/app.yml"
         url = SHARED_CONFIG["repo_url"]
-        quoted = f"{quote}{url}{quote}" if quote == "'" else '"https://github.com/TestOrg/test-agent-\\u0064ev"'
+        quoted = f"{quote}{url}{quote}" if quote == "'" else f'"{url[:-1]}\\u{ord(url[-1]):04x}"'
         content = f"codeComponents:\n- name: another-name\n  url: {quoted} # Keep quoted URL\nowner: test\n"
         app_path.write_text(content)
         result = generate(SHARED_CONFIG, str(app_interface_repo))
@@ -535,6 +535,128 @@ class TestCodeComponent:
         parsed = yaml.safe_load(app_path.read_text())
         assert [c["url"] for c in parsed["codeComponents"]] == [url, url + "/other"]
         assert parsed["notes"] == url
+
+    @pytest.mark.parametrize(
+        "existing_suffix,requested_suffix",
+        [(".git", ""), ("", ".git"), ("/", ""), ("", "/"), (".git/", ""), ("", ".git/"), (".git///", "/")],
+    )
+    @pytest.mark.parametrize("same_name", [False, True])
+    def test_equivalent_urls_preserve_existing_component(
+        self, app_interface_repo, existing_suffix, requested_suffix, same_name
+    ):
+        app_path = app_interface_repo / "data/services/insights/platform-frontend-ai-dev/app.yml"
+        name = SHARED_CONFIG["instance_name"] if same_name else "another-name"
+        url = SHARED_CONFIG["repo_url"]
+        content = f"codeComponents: [{{name: {name}, url: '{url}{existing_suffix}'}}] # Keep\n"
+        app_path.write_text(content)
+        cfg = {**SHARED_CONFIG, "repo_url": url + requested_suffix}
+
+        assert _prepare_code_component(cfg, str(app_interface_repo)) is None
+        result = generate(cfg, str(app_interface_repo))
+        assert result["action"] == "created"
+        assert "app_file" not in result
+        assert app_path.read_text() == content
+        before = {p: p.read_bytes() for p in app_interface_repo.rglob("*.yml")}
+        assert generate(cfg, str(app_interface_repo))["action"] == "unchanged"
+        assert {p: p.read_bytes() for p in before} == before
+
+    @pytest.mark.parametrize("cfg", [SHARED_CONFIG, SEPARATE_CONFIG], ids=["shared", "separate"])
+    @pytest.mark.parametrize("matching_url_position", [None, "before", "after"])
+    @pytest.mark.parametrize("existing_deploy", [False, True])
+    def test_name_collision_fails_before_any_write(
+        self, app_interface_repo, cfg, matching_url_position, existing_deploy
+    ):
+        if existing_deploy:
+            assert "error" not in generate(cfg, str(app_interface_repo))
+        app_path = app_interface_repo / "data/services/insights/platform-frontend-ai-dev/app.yml"
+        entries = [{"name": cfg["instance_name"], "url": "https://example.test/different.git/"}]
+        equivalent = {"name": "another-name", "url": cfg["repo_url"] + ".git/"}
+        if matching_url_position == "before":
+            entries.insert(0, equivalent)
+        elif matching_url_position == "after":
+            entries.append(equivalent)
+        app_path.write_text(yaml.safe_dump({"codeComponents": entries}))
+        before = {p: p.read_bytes() for p in app_interface_repo.rglob("*.yml")}
+
+        result = generate({**cfg, "team_role_ref": "teams/insights/roles/test-role"}, str(app_interface_repo))
+
+        assert "component name 'test-agent-dev' already uses a different URL" in result["error"]
+        assert "action" not in result
+        assert {p: p.read_bytes() for p in app_interface_repo.rglob("*.yml")} == before
+        if cfg["pattern"] == "separate" and not existing_deploy:
+            assert not (app_interface_repo / "data/services/testplatform").exists()
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://github.com/TestOrg/test-agent-dev",
+            "git@github.com:TestOrg/test-agent-dev",
+            "https://GitHub.com/TestOrg/test-agent-dev",
+            "https://github.com/testorg/test-agent-dev",
+            "https://github.com/TestOrg/test-agent-dev/other",
+        ],
+    )
+    def test_other_url_differences_are_not_normalized(self, app_interface_repo, url):
+        app_path = app_interface_repo / "data/services/insights/platform-frontend-ai-dev/app.yml"
+        app_path.write_text(yaml.safe_dump({"codeComponents": [{"name": "other", "url": url}]}))
+        result = generate(SHARED_CONFIG, str(app_interface_repo))
+        assert "app_file" in result
+        assert [c["url"] for c in yaml.safe_load(app_path.read_text())["codeComponents"]] == [
+            SHARED_CONFIG["repo_url"],
+            url,
+        ]
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "codeComponents:",
+            "codeComponents:\n",
+            "codeComponents: # Inline comment\n# Sibling comment\nowner: {team: test}\n...\n",
+            "'codeComponents':\r\n# Keep CRLF\r\nowner:\r\n  nested: [one, two]\r\n...\r\n",
+            "codeComponents: null # Keep\nowner: test\n...\n",
+            "codeComponents: ~ # Keep\r\nowner: [one, two]\r\n...\r\n",
+            "codeComponents: NULL\nowner: test\n",
+            "codeComponents:\n  null # Keep\nowner: test\n",
+            "{codeComponents: , owner: {team: test}} # Keep\n",
+            "{codeComponents: null, owner: [one, two]}\n",
+            "{codeComponents: ~, owner: test}\r\n...\r\n",
+        ],
+    )
+    def test_null_component_field_preserves_surroundings_and_is_idempotent(self, app_interface_repo, content):
+        app_path = app_interface_repo / "data/services/insights/platform-frontend-ai-dev/app.yml"
+        app_path.write_bytes(content.encode())
+        original = yaml.safe_load(content)
+        scalar = next(v for k, v in yaml.compose(content).value if k.value == "codeComponents")
+        update = _prepare_code_component(SHARED_CONFIG, str(app_interface_repo))
+        assert update is not None
+        prepared_path, prepared = update
+        assert prepared_path == app_path
+        assert app_path.read_bytes() == content.encode()
+
+        result = generate(SHARED_CONFIG, str(app_interface_repo))
+
+        assert result["action"] == "created"
+        updated = app_path.read_bytes().decode()
+        assert updated == prepared
+        assert updated.startswith(content[: scalar.start_mark.index])
+        suffix = content[scalar.end_mark.index :]
+        if suffix:
+            assert updated.endswith(suffix)
+        assert yaml.safe_load(updated) == {
+            **original,
+            "codeComponents": [
+                {
+                    "name": SHARED_CONFIG["instance_name"],
+                    "resource": "upstream",
+                    "url": SHARED_CONFIG["repo_url"],
+                }
+            ],
+        }
+        if "\r\n" in content:
+            assert "\n" not in updated.replace("\r\n", "")
+        before = {p: p.read_bytes() for p in app_interface_repo.rglob("*.yml")}
+        assert generate(SHARED_CONFIG, str(app_interface_repo))["action"] == "unchanged"
+        assert {p: p.read_bytes() for p in before} == before
 
     def test_adds_code_component(self, app_interface_repo):
         result = generate(SHARED_CONFIG, str(app_interface_repo))
@@ -734,7 +856,6 @@ class TestMalformedYaml:
         [
             ": [bad yaml\n  :\n",
             "codeComponents: {}\n",
-            "codeComponents: null\n",
             "codeComponents: wrong\n",
             "- not-an-app\n",
             "",
@@ -753,20 +874,19 @@ class TestMalformedYaml:
         app_path.write_text(content)
         before = {p: p.read_bytes() for p in app_interface_repo.rglob("*.yml")}
 
-        assert _add_code_component(SHARED_CONFIG, str(app_interface_repo)) is None
+        with pytest.raises(ValueError, match="Cannot update"):
+            _prepare_code_component(SHARED_CONFIG, str(app_interface_repo))
         result = generate(SHARED_CONFIG, str(app_interface_repo))
 
         assert "app.yml" in result["error"]
         assert "action" not in result
         assert {p: p.read_bytes() for p in app_interface_repo.rglob("*.yml")} == before
 
-    def test_malformed_app_yml_returns_none(self, app_interface_repo):
-        from generate_app_interface import _add_code_component
-
+    def test_malformed_app_yml_raises(self, app_interface_repo):
         app_yml = app_interface_repo / "data" / "services" / "insights" / "platform-frontend-ai-dev" / "app.yml"
         app_yml.write_text(": [bad yaml\n  :\n")
-        result = _add_code_component(SHARED_CONFIG, str(app_interface_repo))
-        assert result is None
+        with pytest.raises(ValueError, match="invalid YAML"):
+            _prepare_code_component(SHARED_CONFIG, str(app_interface_repo))
 
 
 class TestSeparateIdempotency:
@@ -788,15 +908,13 @@ class TestPathTraversal:
             _add_self_service_datafile(cfg, str(app_interface_repo))
 
     def test_app_ref_traversal_rejected(self, app_interface_repo):
-        from generate_app_interface import _add_code_component
-
         cfg = {
             **SHARED_CONFIG,
             "app_ref": "/../../etc/passwd",
         }
         # _safe_path raises ValueError
         with pytest.raises(ValueError, match="Path escapes"):
-            _add_code_component(cfg, str(app_interface_repo))
+            _prepare_code_component(cfg, str(app_interface_repo))
 
 
 class TestInstanceNameValidation:
