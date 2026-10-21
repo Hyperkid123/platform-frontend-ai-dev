@@ -1,9 +1,11 @@
+import json
 import subprocess
 
 import pytest
 import yaml
 from generate_app_interface import (
     SAAS_SELF_SERVICE_REF,
+    _add_code_component,
     _add_self_service_datafile,
     _discover_gcp_project,
     _discover_namespace_ref,
@@ -316,6 +318,13 @@ class TestSharedPattern:
         content = self._read_shared_deploy(app_interface_repo)
         assert "BOT_CONFIG_PATH: instance/test-config" in content
 
+    def test_explicit_config_path_is_preserved(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "config_name": "selected-config", "config_path": "instance/selected-profile"}
+        result = generate(cfg, str(app_interface_repo))
+        deploy = yaml.safe_load((app_interface_repo / result["file"]).read_text())
+        params = deploy["resourceTemplates"][0]["targets"][0]["parameters"]
+        assert params["BOT_CONFIG_PATH"] == cfg["config_path"]
+
     def test_bot_image_uses_quay_org_and_instance_name(self, app_interface_repo):
         generate(SHARED_CONFIG, str(app_interface_repo))
         content = self._read_shared_deploy(app_interface_repo)
@@ -439,6 +448,94 @@ class TestKanbanWorkflow:
 
 
 class TestCodeComponent:
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "codeComponents: []\n",
+            "'codeComponents': [] # keep this comment\nowner: {team: test}\n",
+            'codeComponents: [ ]\nnotes: "quoted: value # retained"\n',
+            "codeComponents: [\n  # Keep the empty flow list comment.\n]\nowner: test\n",
+            "codeComponents: [{name: old, url: 'https://example.test/old'}]\nowner: test\n",
+            "codeComponents: [ # Keep the flow list comment.\n  {name: old, url: 'https://example.test/old'},\n]\nowner: test\n",
+            APP_YML_CONTENT,
+            APP_YML_CONTENT + "# Owner comment\nowner:\n  codeComponents: []\n  nested: [one, two]\n",
+            "codeComponents:\n  # Component comment\n  - name: old\n    url: 'https://example.test/old' # URL comment\nowner:\n  nested: true\n",
+            "codeComponents:\n    - name: old\n      url: https://example.test/old\nowner: test\n",
+            APP_YML_CONTENT.rstrip("\n"),
+            "codeComponents: []\r\nowner: test\r\n",
+            "owner: &owner {team: test}\ncodeComponents: []\nsecondary: *owner\n",
+        ],
+        ids=[
+            "empty-seed",
+            "quoted-key-inline-comment",
+            "spaced-flow",
+            "empty-multiline-flow",
+            "nonempty-flow",
+            "multiline-flow-trailing-comma",
+            "block",
+            "following-nested-sibling",
+            "indented-block-comments",
+            "four-space-block",
+            "no-final-newline",
+            "crlf",
+            "unrelated-anchor",
+        ],
+    )
+    def test_full_generate_preserves_yaml_and_is_byte_idempotent(self, app_interface_repo, content):
+        app_path = app_interface_repo / "data/services/insights/platform-frontend-ai-dev/app.yml"
+        app_path.write_bytes(content.encode())
+        original = yaml.safe_load(content)
+        cfg = {**SHARED_CONFIG, "team_role_ref": "teams/insights/roles/test-role"}
+
+        result = generate(cfg, str(app_interface_repo))
+
+        assert result["action"] == "created"
+        assert result["app_file"] == str(app_path.relative_to(app_interface_repo))
+        updated = app_path.read_bytes().decode()
+        parsed = yaml.safe_load(updated)
+        new_component = {
+            "name": cfg["instance_name"],
+            "resource": "upstream",
+            "url": cfg["repo_url"],
+        }
+        assert parsed == {**original, "codeComponents": [new_component, *original["codeComponents"]]}
+        # Only an insertion is needed: every original byte remains in order.
+        sequence = next(v for k, v in yaml.compose(content).value if k.value == "codeComponents")
+        if sequence.flow_style:
+            start = sequence.start_mark.index + 1
+        else:
+            start = sequence.start_mark.index - sequence.start_mark.column
+        assert updated.startswith(content[:start])
+        assert updated.endswith(content[start:])
+        before_rerun = {p: p.read_bytes() for p in app_interface_repo.rglob("*.yml")}
+        for payload in before_rerun.values():
+            yaml.safe_load(payload)
+
+        assert generate(cfg, str(app_interface_repo))["action"] == "unchanged"
+        assert {p: p.read_bytes() for p in before_rerun} == before_rerun
+
+    @pytest.mark.parametrize("quote", ["'", '"'])
+    def test_duplicate_matches_decoded_component_url(self, app_interface_repo, quote):
+        app_path = app_interface_repo / "data/services/insights/platform-frontend-ai-dev/app.yml"
+        url = SHARED_CONFIG["repo_url"]
+        quoted = f"{quote}{url}{quote}" if quote == "'" else '"https://github.com/TestOrg/test-agent-\\u0064ev"'
+        content = f"codeComponents:\n- name: another-name\n  url: {quoted} # Keep quoted URL\nowner: test\n"
+        app_path.write_text(content)
+        result = generate(SHARED_CONFIG, str(app_interface_repo))
+        assert "error" not in result
+        assert "app_file" not in result
+        assert app_path.read_text() == content
+
+    def test_url_elsewhere_does_not_suppress_component(self, app_interface_repo):
+        app_path = app_interface_repo / "data/services/insights/platform-frontend-ai-dev/app.yml"
+        url = SHARED_CONFIG["repo_url"]
+        content = f"# {url}\nnotes: {url}\ncodeComponents:\n- name: old\n  url: {url}/other\n"
+        app_path.write_text(content)
+        assert "app_file" in generate(SHARED_CONFIG, str(app_interface_repo))
+        parsed = yaml.safe_load(app_path.read_text())
+        assert [c["url"] for c in parsed["codeComponents"]] == [url, url + "/other"]
+        assert parsed["notes"] == url
+
     def test_adds_code_component(self, app_interface_repo):
         result = generate(SHARED_CONFIG, str(app_interface_repo))
         assert "app_file" in result
@@ -618,6 +715,51 @@ class TestTeamRoleRefEdgeCases:
 
 
 class TestMalformedYaml:
+    def test_cli_exits_with_error_for_invalid_app(self, app_interface_repo, monkeypatch, capsys):
+        from generate_app_interface import main
+
+        app_path = app_interface_repo / "data/services/insights/platform-frontend-ai-dev/app.yml"
+        app_path.write_text("codeComponents: {}\n")
+        monkeypatch.setattr(
+            "sys.argv", ["generate_app_interface.py", json.dumps(SHARED_CONFIG), str(app_interface_repo)]
+        )
+        with pytest.raises(SystemExit, match="1"):
+            main()
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert "app.yml" in error
+        assert "codeComponents must be a YAML list" in error
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            ": [bad yaml\n  :\n",
+            "codeComponents: {}\n",
+            "codeComponents: null\n",
+            "codeComponents: wrong\n",
+            "- not-an-app\n",
+            "",
+            f"# {SHARED_CONFIG['repo_url']}\ncodeComponents: [\n",
+            "codeComponents: []\ncodeComponents: []\n",
+            "components: &components []\ncodeComponents: *components\n",
+            "codeComponents: &components []\nother: *components\n",
+            "<<: {codeComponents: []}\n",
+        ],
+    )
+    @pytest.mark.parametrize("existing_deploy", [False, True])
+    def test_generate_reports_invalid_app_without_writing(self, app_interface_repo, content, existing_deploy):
+        if existing_deploy:
+            generate(SHARED_CONFIG, str(app_interface_repo))
+        app_path = app_interface_repo / "data/services/insights/platform-frontend-ai-dev/app.yml"
+        app_path.write_text(content)
+        before = {p: p.read_bytes() for p in app_interface_repo.rglob("*.yml")}
+
+        assert _add_code_component(SHARED_CONFIG, str(app_interface_repo)) is None
+        result = generate(SHARED_CONFIG, str(app_interface_repo))
+
+        assert "app.yml" in result["error"]
+        assert "action" not in result
+        assert {p: p.read_bytes() for p in app_interface_repo.rglob("*.yml")} == before
+
     def test_malformed_app_yml_returns_none(self, app_interface_repo):
         from generate_app_interface import _add_code_component
 
